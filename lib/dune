@@ -1,0 +1,8 @@
+(library
+ (name rere)
+ (public_name rere)
+ (libraries unix)
+ (wrapped true)
+ (foreign_stubs
+  (language c)
+  (names terminal_stubs)))
