@@ -67,7 +67,7 @@ let make = (~people: array(Types.person)) => {
   );
 
   let handleSelect = (_person: Types.person) => {
-    quit();
+    quit(ClearScreen);
   };
 
   let handleActive = (person: option(Types.person)) => {

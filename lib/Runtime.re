@@ -6,8 +6,12 @@ module type HooksComponent = {
 let start = (module C: HooksComponent) => {
   let running = ref(true);
 
-  let quit = () => {
+  let quit = (behavior: Hooks.quitBehavior) => {
     running := false;
+    switch (behavior) {
+    | ClearScreen => Terminal.clearScreen()
+    | PreserveScreen => ()
+    };
   };
 
   /* Create hooks context for this component */

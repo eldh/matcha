@@ -31,7 +31,7 @@ let make = () => {
     switch (key, modifiers) {
     | (Key.Char('q'), _)
     | (Key.Char('Q'), _)
-    | (Key.Char('c'), {Key.ctrl: true, _}) => quit()
+    | (Key.Char('c'), {Key.ctrl: true, _}) => quit(ClearScreen)
     | _ => ()
     }
   });

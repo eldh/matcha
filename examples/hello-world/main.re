@@ -6,14 +6,17 @@ let make = () => {
 
   Event.useKeyDown((key, _modifiers) => {
     switch (key) {
-    | Key.Char('q') | Key.Char('Q') => quit()
+    | Key.Char('q')
+    | Key.Char('Q') => quit(ClearScreen)
     | _ => ()
     }
   });
 
   <Column>
     <Bold> <Text> "Hello, World!" </Text> </Bold>
-    <Text> "\nWelcome to Rere - a React-like terminal UI library for ReasonML." </Text>
+    <Text>
+      "\nWelcome to Rere - a React-like terminal UI library for ReasonML."
+    </Text>
     <Dim> <Text> "\n\nPress Q to quit." </Text> </Dim>
   </Column>;
 };

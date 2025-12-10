@@ -9,13 +9,17 @@ type pendingEffect = {
   cleanup: ref(option(unit => unit)),
 };
 
+type quitBehavior =
+  | ClearScreen
+  | PreserveScreen;
+
 type renderContext = {
   mutable hookIndex: int,
   mutable hooks: array(hookValue),
   mutable keyHandlers: list((Key.t, Key.modifiers) => unit),
   mutable pendingEffects: list(pendingEffect),
   mutable needsRerender: bool,
-  quit: unit => unit,
+  quit: quitBehavior => unit,
 };
 
 let currentContext: ref(option(renderContext)) = ref(None);
@@ -168,13 +172,13 @@ let useKeyDown = (handler: (Key.t, Key.modifiers) => unit): unit => {
 };
 
 /* useQuit hook - returns a function to quit the app */
-let useQuit = (): (unit => unit) => {
+let useQuit = (): (quitBehavior => unit) => {
   let ctx = getContext();
   ctx.quit;
 };
 
 /* Internal: create a fresh context for a component */
-let createContext = (quit: unit => unit): renderContext => {
+let createContext = (quit: quitBehavior => unit): renderContext => {
   {
     hookIndex: 0,
     hooks: [||],
