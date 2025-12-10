@@ -1,4 +1,4 @@
-open Rere;
+open Matcha;
 
 /* Simulate fetching favorite color from API */
 let fetchFavoriteColor = (name: string): string => {

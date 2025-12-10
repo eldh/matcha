@@ -1,6 +1,6 @@
 (executable
  (name main)
- (public_name rere-example-people-list)
- (libraries rere threads)
+ (public_name matcha-example-people-list)
+ (libraries matcha threads)
  (preprocess
   (pps ppx_component)))

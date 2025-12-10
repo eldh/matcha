@@ -1,7 +1,6 @@
 (executable
  (name main)
- (public_name rere-example-counter)
- (libraries rere)
+ (public_name matcha-example-counter)
+ (libraries matcha)
  (preprocess
   (pps ppx_component)))
-

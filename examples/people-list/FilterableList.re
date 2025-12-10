@@ -1,4 +1,4 @@
-open Rere;
+open Matcha;
 
 /* Check if haystack contains needle as a substring */
 let stringContains = (haystack, needle) => {

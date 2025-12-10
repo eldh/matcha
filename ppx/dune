@@ -1,6 +1,6 @@
 (library
  (name ppx_component)
- (public_name rere.ppx)
+ (public_name matcha.ppx)
  (kind ppx_rewriter)
  (libraries ppxlib)
  (preprocess

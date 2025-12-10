@@ -6,8 +6,8 @@ description:
 maintainer: ["Andreas Eldh"]
 authors: ["Andreas Eldh"]
 license: "MIT"
-homepage: "https://github.com/eldh/rere"
-bug-reports: "https://github.com/eldh/rere/issues"
+homepage: "https://github.com/eldh/matcha"
+bug-reports: "https://github.com/eldh/matcha/issues"
 depends: [
   "ocaml" {>= "4.14.0"}
   "dune" {>= "3.0" & >= "3.0"}
@@ -29,4 +29,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/eldh/rere.git"
+dev-repo: "git+https://github.com/eldh/matcha.git"

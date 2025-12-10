@@ -1,4 +1,4 @@
-open Rere;
+open Matcha;
 
 [@component]
 let make = () => {

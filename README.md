@@ -1,4 +1,4 @@
-# Rere
+# Matcha
 
 A React-like terminal UI library for ReasonML/OCaml. Build interactive command-line applications with a familiar component-based architecture, hooks, and JSX syntax.
 
@@ -20,7 +20,7 @@ Add to your `dune-project`:
 (package
  (name your-app)
  (depends
-  (rere (>= 0.1.0))))
+  (matcha (>= 0.1.0))))
 ```
 
 Add to your `dune` file:
@@ -28,14 +28,14 @@ Add to your `dune` file:
 ```dune
 (executable
  (name main)
- (libraries rere)
+ (libraries matcha)
  (preprocess (pps ppx_component)))
 ```
 
 ## Quick Start
 
 ```reason
-open Rere;
+open Matcha;
 
 [@component]
 let make = () => {
@@ -178,7 +178,7 @@ type Key.modifiers = {
 ### Hello World
 
 ```reason
-open Rere;
+open Matcha;
 
 [@component]
 let make = () => {
@@ -201,7 +201,7 @@ let make = () => {
 ### Counter
 
 ```reason
-open Rere;
+open Matcha;
 
 [@component]
 let make = () => {
@@ -266,9 +266,9 @@ let make = (~userId: string) => {
 dune build
 
 # Run examples
-dune exec rere-example-hello-world
-dune exec rere-example-counter
-dune exec rere-example-people-list
+dune exec matcha-example-hello-world
+dune exec matcha-example-counter
+dune exec matcha-example-people-list
 ```
 
 ## License

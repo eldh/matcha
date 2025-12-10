@@ -1,4 +1,4 @@
-open Rere;
+open Matcha;
 
 let people: array(Types.person) = [|
   {

@@ -1,7 +1,6 @@
 (executable
  (name main)
- (public_name rere-example-hello-world)
- (libraries rere)
+ (public_name matcha-example-hello-world)
+ (libraries matcha)
  (preprocess
   (pps ppx_component)))
-

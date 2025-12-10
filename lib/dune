@@ -1,6 +1,6 @@
 (library
- (name rere)
- (public_name rere)
+ (name matcha)
+ (public_name matcha)
  (libraries unix)
  (wrapped true)
  (foreign_stubs

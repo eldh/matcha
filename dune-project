@@ -1,11 +1,11 @@
 (lang dune 3.0)
 
-(name rere)
+(name matcha)
 
 (generate_opam_files true)
 
 (source
- (github eldh/rere))
+ (github eldh/matcha))
 
 (license MIT)
 
@@ -14,7 +14,7 @@
 (maintainers "Andreas Eldh")
 
 (package
- (name rere)
+ (name matcha)
  (synopsis "A React-like terminal UI library for ReasonML")
  (description
   "Build interactive command-line applications with a familiar component-based architecture, hooks, and JSX syntax. Features include useState, useEffect, Context API, and JSX support via PPX.")
