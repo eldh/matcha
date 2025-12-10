@@ -7,11 +7,6 @@ type style =
   | FgColor(int)
   | BgColor(int);
 
-type splitWidth =
-  | Chars(int)
-  | Percent(int)
-  | Half;
-
 type t =
   | Text(string)
   | Styled(style, t)
@@ -19,7 +14,7 @@ type t =
   | Row(list(t))
   | Empty
   | Lazy(unit => t)
-  | SplitView(t, t, splitWidth, int, int); /* left, right, leftWidth, totalWidth, height */
+  | Box(t, int, int, int); /* content, width, height, padding */
 
 /* Constructors */
 let text = (s: string): t => Text(s);
@@ -141,15 +136,29 @@ let padToWidth = (s: string, width: int): string => {
   };
 };
 
-/* Box drawing characters (ASCII for compatibility) */
-let boxTopLeft = "+";
-let boxTopRight = "+";
-let boxBottomLeft = "+";
-let boxBottomRight = "+";
-let boxHorizontal = "-";
-let boxVertical = "|";
-let boxTeeDown = "+";
-let boxTeeUp = "+";
+/* Repeat a string n times (works with multi-byte UTF-8) */
+let repeatString = (s: string, n: int): string => {
+  let buf = Buffer.create(String.length(s) * n);
+  for (_ in 1 to n) {
+    Buffer.add_string(buf, s);
+  };
+  Buffer.contents(buf);
+};
+
+/* Box drawing characters - solid lines (UTF-8) */
+module BoxChars = {
+  let topLeft = "┌";
+  let topRight = "┐";
+  let bottomLeft = "└";
+  let bottomRight = "┘";
+  let horizontal = "─";
+  let vertical = "│";
+  let teeDown = "┬";
+  let teeUp = "┴";
+  let teeRight = "├";
+  let teeLeft = "┤";
+  let cross = "┼";
+};
 
 /* Render element to string */
 let rec render = (el: t): string => {
@@ -160,95 +169,46 @@ let rec render = (el: t): string => {
   | Column(children) => children |> List.map(render) |> String.concat("\n")
   | Row(children) => children |> List.map(render) |> String.concat("")
   | Lazy(f) => render(f())
-  | SplitView(left, right, leftWidthSpec, totalWidth, height) =>
-    /* Padding: 1 char on each side of content */
-    let padding = 1;
+  | Box(content, width, height, padding) =>
+    /* Calculate inner dimensions */
+    let innerWidth = width - padding * 2;
+    let innerHeight = height - padding * 2;
 
-    /* Calculate widths (subtract 3 for borders: │ │ │, and 4 for padding) */
-    let innerWidth = totalWidth - 3 - padding * 4;
-    let leftWidth =
-      switch (leftWidthSpec) {
-      | Chars(n) => min(n, innerWidth - 1)
-      | Percent(p) => innerWidth * p / 100
-      | Half => innerWidth / 2
-      };
-    let rightWidth = innerWidth - leftWidth;
+    /* Render content and split into lines */
+    let contentLines = splitLines(render(content));
 
-    /* Total cell widths including padding */
-    let leftCellWidth = leftWidth + padding * 2;
-    let rightCellWidth = rightWidth + padding * 2;
-
-    /* Calculate inner height (subtract 2 for borders, 2 for vertical padding) */
-    let innerHeight = height - 2 - padding * 2;
-
-    /* Render children and split into lines */
-    let leftLines = splitLines(render(left));
-    let rightLines = splitLines(render(right));
-
-    /* Use terminal height, but at least fit the content */
-    let contentHeight =
-      max(
-        innerHeight,
-        max(List.length(leftLines), List.length(rightLines)),
-      );
-
-    /* Pad lines lists to same height */
+    /* Pad lines list to fill height */
     let padLines = (lines, targetHeight) => {
       let len = List.length(lines);
       if (len >= targetHeight) {
-        lines;
+        /* Take only what fits */
+        let rec take = (n, lst) =>
+          switch (n, lst) {
+          | (0, _) => []
+          | (_, []) => []
+          | (n, [h, ...t]) => [h, ...take(n - 1, t)]
+          };
+        take(targetHeight, lines);
       } else {
         lines @ List.init(targetHeight - len, _ => "");
       };
     };
 
-    let leftPadded = padLines(leftLines, contentHeight);
-    let rightPadded = padLines(rightLines, contentHeight);
+    let paddedLines = padLines(contentLines, innerHeight);
 
-    /* Add vertical padding (empty lines at top and bottom) */
-    let emptyLine = "";
-    let leftWithVPad = [emptyLine, ...leftPadded] @ [emptyLine];
-    let rightWithVPad = [emptyLine, ...rightPadded] @ [emptyLine];
+    /* Add horizontal padding and constrain width */
+    let hPad = String.make(padding, ' ');
+    let formattedLines =
+      paddedLines
+      |> List.map(line =>
+           hPad ++ padToWidth(line, innerWidth) ++ resetAnsi ++ hPad
+         );
 
-    /* Build output */
-    let topBorder =
-      boxTopLeft
-      ++ String.make(leftCellWidth, boxHorizontal.[0])
-      ++ boxTeeDown
-      ++ String.make(rightCellWidth, boxHorizontal.[0])
-      ++ boxTopRight;
+    /* Add vertical padding */
+    let emptyLine = String.make(width, ' ');
+    let vPadLines = List.init(padding, _ => emptyLine);
 
-    let pad = String.make(padding, ' ');
-
-    let contentLines =
-      List.map2(
-        (l, r) => {
-          boxVertical
-          ++ resetAnsi
-          ++ pad
-          ++ padToWidth(l, leftWidth)
-          ++ pad
-          ++ resetAnsi
-          ++ boxVertical
-          ++ resetAnsi
-          ++ pad
-          ++ padToWidth(r, rightWidth)
-          ++ pad
-          ++ resetAnsi
-          ++ boxVertical
-        },
-        leftWithVPad,
-        rightWithVPad,
-      );
-
-    let bottomBorder =
-      boxBottomLeft
-      ++ String.make(leftCellWidth, boxHorizontal.[0])
-      ++ boxTeeUp
-      ++ String.make(rightCellWidth, boxHorizontal.[0])
-      ++ boxBottomRight;
-
-    String.concat("\n", [topBorder, ...contentLines] @ [bottomBorder]);
+    String.concat("\n", vPadLines @ formattedLines @ vPadLines);
   };
 };
 
@@ -302,21 +262,20 @@ module Row = {
   let createElement = props => Lazy(() => make(props));
 };
 
-module SplitView = {
+module Box = {
   type props = {
-    left: t,
-    right: t,
-    leftWidth: option(splitWidth),
+    children: t,
     width: int,
     height: int,
+    padding: option(int),
   };
-  let make = ({left, right, leftWidth, width, height}) => {
-    let widthSpec =
-      switch (leftWidth) {
-      | Some(w) => w
-      | None => Half
+  let make = ({children, width, height, padding}) => {
+    let pad =
+      switch (padding) {
+      | Some(p) => p
+      | None => 0
       };
-    SplitView(left, right, widthSpec, width, height);
+    Box(children, width, height, pad);
   };
   let createElement = props => Lazy(() => make(props));
 };

@@ -17,7 +17,11 @@ module Underline = Element.Underline;
 module Inverted = Element.Inverted;
 module Column = Element.Column;
 module Row = Element.Row;
-module SplitView = Element.SplitView;
+module Box = Element.Box;
 
-/* Re-export splitWidth type for convenience */
-type splitWidth = Element.splitWidth;
+/* Box drawing utilities */
+module BoxChars = Element.BoxChars;
+let repeatString = Element.repeatString;
+let padToWidth = Element.padToWidth;
+let visibleLength = Element.visibleLength;
+let splitLines = Element.splitLines;

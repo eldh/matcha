@@ -47,7 +47,7 @@ let make = (~people: array(Types.person)) => {
           <Text>
             {"\n\nTerminal: "
              ++ string_of_int(width)
-             ++ "×"
+             ++ "x"
              ++ string_of_int(height)}
           </Text>
         </Dim>
@@ -57,8 +57,9 @@ let make = (~people: array(Types.person)) => {
   <SplitView
     left=leftPane
     right=rightPane
-    leftWidth={Some(Element.Percent(40))}
+    leftWidth={Some(SplitView.Percent(40))}
     width
     height
+    padding=None
   />;
 };
