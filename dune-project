@@ -20,12 +20,10 @@
   "Build interactive command-line applications with a familiar component-based architecture, hooks, and JSX syntax. Features include useState, useEffect, Context API, and JSX support via PPX.")
  (depends
   (ocaml
-   (and
-    (>= 4.14.0)
-    (< 5.3.0)))
+   (>= 5.2.0))
   (dune
    (>= 3.0))
   (reason
-   (>= 3.8.0))
+   (>= 3.12.0))
   (ppxlib
-   (>= 0.28.0))))
+   (>= 0.35.0))))

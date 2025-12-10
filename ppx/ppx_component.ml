@@ -28,6 +28,21 @@ let rec collect_type_vars typ acc =
       collect_type_vars t acc
   | _ -> acc
 
+(* Extract labeled arguments from a function expression.
+   Works with both old AST (Pexp_fun) and new AST (Pexp_function with function_param).
+   We use Ast_pattern to make this version-independent. *)
+let rec extract_labeled_args_from_pattern pat acc =
+  (* Helper to extract type from pattern *)
+  let get_type pat =
+    match pat.ppat_desc with
+    | Ppat_constraint (_, t) -> Some t
+    | _ -> None
+  in
+  match pat.ppat_desc with
+  | Ppat_constraint (inner_pat, _) ->
+      extract_labeled_args_from_pattern inner_pat acc
+  | _ -> (get_type pat, acc)
+
 let component_mapper =
   object (self)
     inherit Ast_traverse.map as super
@@ -120,8 +135,10 @@ let component_mapper =
           let loc = item.pstr_loc in
 
           (* Extract the function and its labeled arguments *)
+          (* This handles both old (Pexp_fun) and new (Pexp_function) AST *)
           let rec extract_args expr acc =
             match expr.pexp_desc with
+            (* Old AST: OCaml < 5.3 / ppxlib with old AST *)
             | Pexp_fun (Labelled label, _default, pat, body) ->
                 let typ =
                   match pat.ppat_desc with
@@ -136,6 +153,9 @@ let component_mapper =
                   | _ -> None
                 in
                 extract_args body ((label, typ) :: acc)
+            | Pexp_fun (Nolabel, _, _, body) ->
+                (* Skip unit parameter *)
+                extract_args body acc
             | _ -> (List.rev acc, expr)
           in
 
