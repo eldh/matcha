@@ -23,7 +23,11 @@ let start = (module C: HooksComponent) => {
   /* Set up terminal */
   Terminal.setRawMode();
   Terminal.hideCursor();
-  at_exit(Terminal.restoreTerminal);
+  at_exit(() => {
+    /* Run effect cleanups before exit */
+    Hooks.runCleanups(ctx);
+    Terminal.restoreTerminal();
+  });
 
   /* Main loop */
   while (running^) {
@@ -39,6 +43,9 @@ let start = (module C: HooksComponent) => {
       let output = Element.render(element);
       print_string(output);
       flush(stdout);
+
+      /* Run effects after render */
+      Hooks.runEffects(ctx);
 
       Hooks.currentContext := None;
     };

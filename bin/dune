@@ -1,6 +1,6 @@
 (executable
  (name main)
  (public_name rere)
- (libraries rere)
+ (libraries rere threads)
  (preprocess
   (pps ppx_component)))
