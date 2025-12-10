@@ -1,1 +1,26 @@
-_build
+# Dune
+_build/
+*.install
+
+# OCaml
+*.byte
+*.native
+*.cmo
+*.cmi
+*.cma
+*.cmx
+*.cmxa
+*.cmxs
+*.o
+*.a
+
+# Editor
+.merlin
+*.swp
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

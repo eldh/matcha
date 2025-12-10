@@ -1,0 +1,7 @@
+(executable
+ (name main)
+ (public_name rere-example-hello-world)
+ (libraries rere)
+ (preprocess
+  (pps ppx_component)))
+

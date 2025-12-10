@@ -1,0 +1,7 @@
+(executable
+ (name main)
+ (public_name rere-example-counter)
+ (libraries rere)
+ (preprocess
+  (pps ppx_component)))
+
