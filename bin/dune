@@ -1,6 +1,0 @@
-(executable
- (name main)
- (public_name matcha)
- (libraries matcha threads)
- (preprocess
-  (pps ppx_component)))
