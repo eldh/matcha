@@ -28,21 +28,6 @@ let rec collect_type_vars typ acc =
       collect_type_vars t acc
   | _ -> acc
 
-(* Extract labeled arguments from a function expression.
-   Works with both old AST (Pexp_fun) and new AST (Pexp_function with function_param).
-   We use Ast_pattern to make this version-independent. *)
-let rec extract_labeled_args_from_pattern pat acc =
-  (* Helper to extract type from pattern *)
-  let get_type pat =
-    match pat.ppat_desc with
-    | Ppat_constraint (_, t) -> Some t
-    | _ -> None
-  in
-  match pat.ppat_desc with
-  | Ppat_constraint (inner_pat, _) ->
-      extract_labeled_args_from_pattern inner_pat acc
-  | _ -> (get_type pat, acc)
-
 let component_mapper =
   object (self)
     inherit Ast_traverse.map as super
@@ -135,28 +120,35 @@ let component_mapper =
           let loc = item.pstr_loc in
 
           (* Extract the function and its labeled arguments *)
-          (* This handles both old (Pexp_fun) and new (Pexp_function) AST *)
+          (* OCaml 5.3+ / ppxlib with 5.2 AST: Pexp_function with function_param list *)
           let rec extract_args expr acc =
             match expr.pexp_desc with
-            (* Old AST: OCaml < 5.3 / ppxlib with old AST *)
-            | Pexp_fun (Labelled label, _default, pat, body) ->
-                let typ =
-                  match pat.ppat_desc with
-                  | Ppat_constraint (_, t) -> Some t
-                  | _ -> None
-                in
-                extract_args body ((label, typ) :: acc)
-            | Pexp_fun (Optional label, _default, pat, body) ->
-                let typ =
-                  match pat.ppat_desc with
-                  | Ppat_constraint (_, t) -> Some t
-                  | _ -> None
-                in
-                extract_args body ((label, typ) :: acc)
-            | Pexp_fun (Nolabel, _, _, body) ->
-                (* Skip unit parameter *)
-                extract_args body acc
-            | _ -> (List.rev acc, expr)
+            | Pexp_function (params, _constraint, Pfunction_body body) ->
+                (* Extract labeled params from this function *)
+                let new_args = List.filter_map (fun param ->
+                  match param.pparam_desc with
+                  | Pparam_val (Labelled label, _default, pat) ->
+                      let typ =
+                        match pat.ppat_desc with
+                        | Ppat_constraint (_, t) -> Some t
+                        | _ -> None
+                      in
+                      Some (label, typ)
+                  | Pparam_val (Optional label, _default, pat) ->
+                      let typ =
+                        match pat.ppat_desc with
+                        | Ppat_constraint (_, t) -> Some t
+                        | _ -> None
+                      in
+                      Some (label, typ)
+                  | Pparam_val (Nolabel, _, _) -> None
+                  | Pparam_newtype _ -> None
+                ) params in
+                extract_args body (acc @ new_args)
+            | Pexp_function (_, _, Pfunction_cases _) ->
+                (* Function with match cases - stop here *)
+                (acc, expr)
+            | _ -> (acc, expr)
           in
 
           let args, body = extract_args binding.pvb_expr [] in
