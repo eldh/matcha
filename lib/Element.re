@@ -285,3 +285,10 @@ module Box = {
   };
   let createElement = props => Lazy(() => make(props));
 };
+
+/* Fragment - groups children without adding structure (renders as Column) */
+module Fragment = {
+  type props = {children: list(t)};
+  let make = ({children}) => Column(children);
+  let createElement = props => Lazy(() => make(props));
+};
