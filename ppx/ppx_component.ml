@@ -156,13 +156,65 @@ let component_mapper =
           (* Transform any JSX in the body *)
           let body = self#expression body in
 
-          if List.length args = 0 then
-            (* No labeled args - just a simple make function, return as-is but remove attribute *)
-            let new_binding = { binding with 
-              pvb_attributes = [];
-              pvb_expr = self#expression binding.pvb_expr 
-            } in
-            { item with pstr_desc = Pstr_value (Nonrecursive, [ new_binding ]) }
+          if List.length args = 0 then begin
+            (* No labeled args - generate make and createElement that takes unit *)
+            let transformed_body = self#expression binding.pvb_expr in
+            
+            let make_binding =
+              Ast_builder.Default.pstr_value ~loc Nonrecursive
+                [Ast_builder.Default.value_binding ~loc
+                   ~pat:(Ast_builder.Default.ppat_var ~loc { txt = "make"; loc })
+                   ~expr:transformed_body]
+            in
+
+            (* Generate createElement: let createElement = () => Element.createElement(() => make()) *)
+            let unit_pat = Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None in
+            let unit_expr = Ast_builder.Default.pexp_construct ~loc { txt = Lident "()"; loc } None in
+            
+            let create_element_body =
+              let make_call = 
+                Ast_builder.Default.pexp_apply ~loc
+                  (Ast_builder.Default.pexp_ident ~loc { txt = Lident "make"; loc })
+                  [(Nolabel, unit_expr)]
+              in
+              let thunk =
+                Ast_builder.Default.pexp_fun ~loc Nolabel None unit_pat make_call
+              in
+              Ast_builder.Default.pexp_apply ~loc
+                (Ast_builder.Default.pexp_ident ~loc 
+                   { txt = Ldot (Lident "Element", "createElement"); loc })
+                [(Nolabel, thunk)]
+            in
+            
+            let create_element_fun =
+              Ast_builder.Default.pexp_fun ~loc Nolabel None unit_pat create_element_body
+            in
+            
+            (* Add [@warning "-32"] to suppress unused warning *)
+            let warning_attr = 
+              Ast_builder.Default.attribute ~loc
+                ~name:{ txt = "warning"; loc }
+                ~payload:(PStr [Ast_builder.Default.pstr_eval ~loc 
+                  (Ast_builder.Default.pexp_constant ~loc (Pconst_string ("-32", loc, None))) []])
+            in
+            
+            let create_element_binding =
+              Ast_builder.Default.pstr_value ~loc Nonrecursive
+                [{ (Ast_builder.Default.value_binding ~loc
+                   ~pat:(Ast_builder.Default.ppat_var ~loc { txt = "createElement"; loc })
+                   ~expr:create_element_fun) with pvb_attributes = [warning_attr] }]
+            in
+
+            (* Return: let make, let createElement *)
+            Ast_builder.Default.pstr_include ~loc
+              {
+                pincl_mod =
+                  Ast_builder.Default.pmod_structure ~loc
+                    [ make_binding; create_element_binding ];
+                pincl_loc = loc;
+                pincl_attributes = [];
+              }
+          end
           else
             (* Collect type variables from all argument types *)
             let type_vars = 
@@ -264,11 +316,19 @@ let component_mapper =
               Ast_builder.Default.pexp_fun ~loc Nolabel None props_pat create_element_body
             in
             
+            (* Add [@warning "-32"] to suppress unused warning *)
+            let warning_attr = 
+              Ast_builder.Default.attribute ~loc
+                ~name:{ txt = "warning"; loc }
+                ~payload:(PStr [Ast_builder.Default.pstr_eval ~loc 
+                  (Ast_builder.Default.pexp_constant ~loc (Pconst_string ("-32", loc, None))) []])
+            in
+            
             let create_element_binding =
               Ast_builder.Default.pstr_value ~loc Nonrecursive
-                [Ast_builder.Default.value_binding ~loc
+                [{ (Ast_builder.Default.value_binding ~loc
                    ~pat:(Ast_builder.Default.ppat_var ~loc { txt = "createElement"; loc })
-                   ~expr:create_element_fun]
+                   ~expr:create_element_fun) with pvb_attributes = [warning_attr] }]
             in
 
             (* Return: type props, let make, let createElement *)

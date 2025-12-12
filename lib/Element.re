@@ -14,7 +14,8 @@ type t =
   | Row(list(t))
   | Empty
   | Lazy(unit => t)
-  | Box(t, int, int, int); /* content, width, height, padding */
+  | Box(t, int, int, int) /* content, width, height, padding */
+  | WithContext(unit => unit, unit => unit, t); /* setup, teardown, children */
 
 /* Constructors */
 let text = (s: string): t => Text(s);
@@ -169,6 +170,11 @@ let rec render = (el: t): string => {
   | Column(children) => children |> List.map(render) |> String.concat("\n")
   | Row(children) => children |> List.map(render) |> String.concat("")
   | Lazy(f) => render(f())
+  | WithContext(setup, teardown, children) =>
+    setup();
+    let result = render(children);
+    teardown();
+    result;
   | Box(content, width, height, padding) =>
     /* Calculate inner dimensions */
     let innerWidth = width - padding * 2;

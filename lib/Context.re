@@ -33,21 +33,19 @@ type provider('a) = {
 };
 
 let provide = (context: t('a), value: 'a, children: Element.t): Element.t => {
-  /* Store the value and render children */
-  let previousValue = context.currentValue;
-  context.currentValue = value;
+  /* Use WithContext to ensure context is set during render (not just lazy forcing) */
+  let previousValue = ref(context.currentValue);
 
-  /* Wrap in a lazy element so the value is set when rendered */
-  Element.createElement(() => {
-    let result =
-      switch (children) {
-      | Element.Lazy(f) => f()
-      | other => other
-      };
-    /* Restore previous value after children render */
-    context.currentValue = previousValue;
-    result;
-  });
+  let setup = () => {
+    previousValue := context.currentValue;
+    context.currentValue = value;
+  };
+
+  let teardown = () => {
+    context.currentValue = previousValue^;
+  };
+
+  Element.WithContext(setup, teardown, children);
 };
 
 /* Read the current value of a context */

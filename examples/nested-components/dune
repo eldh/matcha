@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name matcha-example-nested-components)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))
