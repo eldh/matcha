@@ -1,30 +1,75 @@
-type t =
-  | Arrow_up
-  | Arrow_down
-  | Arrow_left
-  | Arrow_right
-  | Char(char)
-  | Escape
-  | Enter
-  | Backspace
-  | Tab
-  | Delete
-  | KillLine /* Ctrl+U - clear line */
-  | KillWord /* Ctrl+W - delete word */
-  | Unknown;
+/*
+ * Key - Keyboard input handling and normalization
+ *
+ * This module provides types and parsing for keyboard input in terminal applications.
+ * It normalizes various terminal-specific key codes into a consistent API, so
+ * application code doesn't need to handle raw terminal escape sequences.
+ *
+ * Key Types:
+ * - Arrow keys: Arrow_up, Arrow_down, Arrow_left, Arrow_right
+ * - Special keys: Escape, Enter, Backspace, Tab, Delete
+ * - Terminal shortcuts: KillLine (Ctrl+U), KillWord (Ctrl+W)
+ * - Character input: Char(char) with optional modifiers
+ *
+ * Modifiers:
+ * Key presses can have modifiers: ctrl, alt, shift.
+ * For most special keys, modifiers are already normalized (e.g., Ctrl+H becomes Backspace).
+ */
 
+/* Keyboard key type.
+ * Represents a normalized key press, abstracting over terminal-specific encodings.
+ */
+type t =
+  | Arrow_up /* Up arrow key */
+  | Arrow_down /* Down arrow key */
+  | Arrow_left /* Left arrow key */
+  | Arrow_right /* Right arrow key */
+  | Char(char) /* Regular character key */
+  | Escape /* Escape key */
+  | Enter /* Enter/Return key */
+  | Backspace /* Backspace key (normalized from code 8 or 127) */
+  | Tab /* Tab key */
+  | Delete /* Delete key (forward delete) */
+  | KillLine /* Ctrl+U - kill/clear entire line */
+  | KillWord /* Ctrl+W - kill/delete previous word */
+  | Unknown; /* Unrecognized key or sequence */
+
+/* Key modifiers record.
+ * Indicates which modifier keys were held during the key press.
+ */
 type modifiers = {
-  ctrl: bool,
-  alt: bool,
-  shift: bool,
+  ctrl: bool, /* Control key was held */
+  alt: bool, /* Alt/Option key was held */
+  shift: bool /* Shift key was held */
 };
 
+/* Default modifiers with all flags set to false.
+ * Used for keys that don't have any modifiers.
+ */
 let noModifiers = {
   ctrl: false,
   alt: false,
   shift: false,
 };
 
+/* Parse raw terminal input bytes into a normalized key and modifiers.
+ *
+ * This function handles:
+ * - Single-byte characters and control codes
+ * - ANSI escape sequences for arrow keys and special keys
+ * - Alt+key combinations (ESC followed by character)
+ * - Ctrl+key combinations (control codes 1-26)
+ *
+ * Normalization performed:
+ * - Code 8 (Ctrl+H) and 127 (DEL) -> Backspace
+ * - Code 9 (Ctrl+I) -> Tab
+ * - Code 21 (Ctrl+U) -> KillLine
+ * - Code 23 (Ctrl+W) -> KillWord
+ * - ESC[A/B/C/D -> Arrow keys
+ * - ESC[3~ -> Delete
+ *
+ * Returns: A tuple of (key, modifiers)
+ */
 let parse = (bytes: bytes, len: int): (t, modifiers) =>
   if (len == 0) {
     (Unknown, noModifiers);
@@ -59,7 +104,7 @@ let parse = (bytes: bytes, len: int): (t, modifiers) =>
   } else if (len >= 3
              && Bytes.get(bytes, 0) == '\027'
              && Bytes.get(bytes, 1) == '[') {
-    /* Escape sequences */
+    /* ANSI escape sequences: ESC [ <code> */
     switch (Bytes.get(bytes, 2)) {
     | 'A' => (Arrow_up, noModifiers)
     | 'B' => (Arrow_down, noModifiers)
@@ -72,7 +117,7 @@ let parse = (bytes: bytes, len: int): (t, modifiers) =>
     | _ => (Unknown, noModifiers)
     };
   } else if (len >= 2 && Bytes.get(bytes, 0) == '\027') {
-    /* Alt+key */
+    /* Alt+key: ESC followed by character */
     let c = Bytes.get(bytes, 1);
     (
       Char(c),

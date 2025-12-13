@@ -1,29 +1,55 @@
-/* Hook state storage */
+/*
+ * Hooks - React-style hooks for stateful terminal components
+ *
+ * This module provides hooks that allow components to have state and
+ * side effects while remaining functional. Hooks must be called in the
+ * same order on every render.
+ *
+ * Available hooks:
+ * - useState: Local component state
+ * - useEffect: Side effects with dependency tracking
+ * - useEffectAlways: Side effects that run every render
+ * - useKeyDown: Register keyboard event handlers
+ * - useQuit: Get a function to quit the application
+ */
+
+/* Internal hook value storage.
+ * Each hook slot stores either state or effect data.
+ */
 type hookValue =
   | StateHook(ref(Obj.t))
   | EffectHook(ref(option(array(Obj.t))), ref(option(unit => unit)));
-/* EffectHook: (previous deps, cleanup function) */
+/* EffectHook stores: (previous deps for comparison, cleanup function) */
 
+/* Pending effect to be run after render (internal) */
 type pendingEffect = {
   effect: unit => option(unit => unit),
   cleanup: ref(option(unit => unit)),
 };
 
+/* Behavior when quitting the application.
+ * Controls whether the screen is cleared on exit.
+ */
 type quitBehavior =
-  | ClearScreen
-  | PreserveScreen;
+  | ClearScreen /* Clear the terminal before exiting */
+  | PreserveScreen; /* Keep terminal content visible after exit */
 
+/* Render context containing all hook state for a component.
+ * Managed by the runtime - not for direct use.
+ */
 type renderContext = {
-  mutable hookIndex: int,
-  mutable hooks: array(hookValue),
-  mutable keyHandlers: list((Key.t, Key.modifiers) => unit),
-  mutable pendingEffects: list(pendingEffect),
-  mutable needsRerender: bool,
-  quit: quitBehavior => unit,
+  mutable hookIndex: int, /* Current hook slot */
+  mutable hooks: array(hookValue), /* Stored hook values */
+  mutable keyHandlers: list((Key.t, Key.modifiers) => unit), /* Active handlers */
+  mutable pendingEffects: list(pendingEffect), /* Effects to run post-render */
+  mutable needsRerender: bool, /* Whether to re-render */
+  quit: quitBehavior => unit /* Quit callback */
 };
 
+/* Global current context (set during render) */
 let currentContext: ref(option(renderContext)) = ref(None);
 
+/* Get the current render context (internal - fails if not in render) */
 let getContext = () => {
   switch (currentContext^) {
   | None => failwith("Hook called outside of render context")
@@ -31,7 +57,20 @@ let getContext = () => {
   };
 };
 
-/* useState hook */
+/* Create local state for a component.
+ *
+ * Returns a tuple of (currentValue, setValue). Calling setValue will
+ * trigger a re-render with the new value.
+ *
+ * Rules:
+ * - Must be called in the same order every render
+ * - Don't call inside conditionals or loops
+ * - The initial value is only used on first render
+ *
+ * Example:
+ *   let (count, setCount) = Hooks.useState(0);
+ *   setCount(count + 1);  // Triggers re-render
+ */
 let useState = (initial: 'a): ('a, 'a => unit) => {
   let ctx = getContext();
   let idx = ctx.hookIndex;
@@ -61,7 +100,7 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
   };
 };
 
-/* Compare dependency arrays */
+/** Compare dependency arrays for changes (internal) */
 let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
   switch (prev) {
   | None => false /* First run, deps don't exist yet */
@@ -80,14 +119,24 @@ let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
   };
 };
 
-/* useEffect hook */
+/* Run a side effect when dependencies change.
+ *
+ * The effect runs after render completes. If it returns a cleanup function,
+ * that function is called before the next effect run or on unmount.
+ *
+ * The effect only runs when one of the dependencies changes (compared by
+ * physical equality).
+ *
+ * Example:
+ *   Hooks.useEffect(() => ..., [|id|]);
+ *   Return Some(cleanupFn) to run cleanup before next effect.
+ */
 let useEffect =
     (effect: unit => option(unit => unit), deps: array('a)): unit => {
   let ctx = getContext();
   let idx = ctx.hookIndex;
   ctx.hookIndex = idx + 1;
 
-  /* Convert deps to Obj.t array for comparison */
   let depsObj = Array.map(Obj.repr, deps);
 
   if (idx >= Array.length(ctx.hooks)) {
@@ -97,7 +146,6 @@ let useEffect =
     ctx.hooks =
       Array.append(ctx.hooks, [|EffectHook(prevDepsRef, cleanupRef)|]);
 
-    /* Schedule effect to run after render */
     ctx.pendingEffects = [
       {
         effect,
@@ -106,14 +154,12 @@ let useEffect =
       ...ctx.pendingEffects,
     ];
 
-    /* Store deps for next render */
     prevDepsRef := Some(depsObj);
   } else {
     /* Subsequent render - check if deps changed */
     switch (ctx.hooks[idx]) {
     | EffectHook(prevDepsRef, cleanupRef) =>
       if (!depsEqual(prevDepsRef^, depsObj)) {
-        /* Deps changed - schedule effect */
         ctx.pendingEffects = [
           {
             effect,
@@ -121,8 +167,6 @@ let useEffect =
           },
           ...ctx.pendingEffects,
         ];
-
-        /* Update deps */
         prevDepsRef := Some(depsObj);
       }
     | StateHook(_) => failwith("Hook type mismatch: expected EffectHook")
@@ -130,14 +174,17 @@ let useEffect =
   };
 };
 
-/* useEffect with no deps - runs every render */
+/* Run a side effect on every render.
+ *
+ * Unlike useEffect, this runs after every render regardless of any
+ * dependencies. Use sparingly as it can impact performance.
+ */
 let useEffectAlways = (effect: unit => option(unit => unit)): unit => {
   let ctx = getContext();
   let idx = ctx.hookIndex;
   ctx.hookIndex = idx + 1;
 
   if (idx >= Array.length(ctx.hooks)) {
-    /* First render */
     let prevDepsRef = ref(None);
     let cleanupRef = ref(None);
     ctx.hooks =
@@ -165,19 +212,44 @@ let useEffectAlways = (effect: unit => option(unit => unit)): unit => {
   };
 };
 
-/* useKeyDown hook - registers a key handler for this render */
+/* Register a keyboard event handler.
+ *
+ * The handler is called whenever a key is pressed while the app is running.
+ * Handlers are cleared and re-registered on each render.
+ *
+ * Example:
+ *   Hooks.useKeyDown((key, modifiers) =>
+ *     switch (key) ...
+ *   );
+ */
 let useKeyDown = (handler: (Key.t, Key.modifiers) => unit): unit => {
   let ctx = getContext();
   ctx.keyHandlers = [handler, ...ctx.keyHandlers];
 };
 
-/* useQuit hook - returns a function to quit the app */
+/* Get a function to quit the application.
+ *
+ * Returns a function that, when called, will stop the main loop.
+ * The quitBehavior argument controls whether the terminal is cleared.
+ *
+ * Example:
+ *   let quit = Hooks.useQuit();
+ *   quit(ClearScreen);    // Exit and clear terminal
+ *   quit(PreserveScreen); // Exit but keep output visible
+ */
 let useQuit = (): (quitBehavior => unit) => {
   let ctx = getContext();
   ctx.quit;
 };
 
-/* Internal: create a fresh context for a component */
+/* ============================================================================
+ * Internal Runtime Functions
+ * These are used by Runtime.re to manage the render lifecycle.
+ * ============================================================================ */
+
+/* Create a fresh render context for a component.
+ * Called once when the app starts. (internal)
+ */
 let createContext = (quit: quitBehavior => unit): renderContext => {
   {
     hookIndex: 0,
@@ -189,26 +261,27 @@ let createContext = (quit: quitBehavior => unit): renderContext => {
   };
 };
 
-/* Internal: prepare context for a render pass */
+/* Prepare context for a new render pass.
+ * Resets hook index and clears transient state. (internal)
+ */
 let beginRender = (ctx: renderContext): unit => {
   ctx.hookIndex = 0;
   ctx.keyHandlers = [];
   ctx.pendingEffects = [];
 };
 
-/* Internal: run pending effects after render */
+/* Run pending effects after render completes.
+ * Effects run in declaration order. Cleanup from previous
+ * render is called before running the new effect. (internal)
+ */
 let runEffects = (ctx: renderContext): unit => {
-  /* Run effects in reverse order (so they run in declaration order) */
   let effects = List.rev(ctx.pendingEffects);
   List.iter(
     ({effect, cleanup}) => {
-      /* Run cleanup from previous render if exists */
       switch (cleanup^) {
       | Some(cleanupFn) => cleanupFn()
       | None => ()
       };
-
-      /* Run effect and store new cleanup */
       cleanup := effect();
     },
     effects,
@@ -216,7 +289,9 @@ let runEffects = (ctx: renderContext): unit => {
   ctx.pendingEffects = [];
 };
 
-/* Internal: run all cleanup functions (for unmount) */
+/* Run all cleanup functions for component unmount.
+ * Called when the app is exiting. (internal)
+ */
 let runCleanups = (ctx: renderContext): unit => {
   Array.iter(
     hook => {

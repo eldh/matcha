@@ -38,7 +38,7 @@ let component_mapper =
       (* Match JSX: Component.createElement(~prop=val, ~children=[...], ()) *)
       | Pexp_apply (fn, args) -> (
           match fn.pexp_desc with
-          | Pexp_ident { txt = Ldot (module_path, "createElement"); loc = _ } 
+          | Pexp_ident { txt = Ldot (_module_path, "createElement"); loc = _ } 
             when List.exists (fun (lbl, _) -> 
               match lbl with 
               | Labelled "children" -> true 
@@ -72,39 +72,22 @@ let component_mapper =
                 | Nolabel -> None
               ) args in
               
-              (* Build the props record *)
-              let first_field = make_field_access module_path (
-                match props with 
-                | (name, _) :: _ -> name 
-                | [] -> "children"
-              ) in
-              
-              let record_fields = 
+              (* Build labeled arguments for createElement *)
+              let labeled_args = 
                 (List.map (fun (name, value) ->
-                  ({ txt = Lident name; loc }, value)
+                  (Labelled name, value)
                 ) props)
                 @
                 (match !children_expr with
-                | Some children -> [({ txt = Lident "children"; loc }, children)]
+                | Some children -> [(Labelled "children", children)]
                 | None -> [])
+                @
+                (* Always add unit at the end for curried functions with optional args *)
+                [(Nolabel, Ast_builder.Default.pexp_construct ~loc 
+                    { txt = Lident "()"; loc } None)]
               in
               
-              (* If we have fields, create a record; otherwise pass unit *)
-              if List.length record_fields > 0 then
-                let record = 
-                  Ast_builder.Default.pexp_record ~loc
-                    ((let (_name, value) = List.hd record_fields in
-                      ({ txt = first_field; loc }, value)) ::
-                     (List.tl record_fields |> List.map (fun (name, value) ->
-                       ({ txt = name.txt; loc }, value))))
-                    None
-                in
-                Ast_builder.Default.pexp_apply ~loc fn [(Nolabel, record)]
-              else
-                (* No props - pass unit *)
-                Ast_builder.Default.pexp_apply ~loc fn 
-                  [(Nolabel, Ast_builder.Default.pexp_construct ~loc 
-                    { txt = Lident "()"; loc } None)]
+              Ast_builder.Default.pexp_apply ~loc fn labeled_args
                     
           | _ -> super#expression expr
         )
@@ -294,12 +277,50 @@ let component_mapper =
                    ~expr:make_fun]
             in
 
-            (* Generate createElement: let createElement = (props) => Element.createElement(() => make(props)) *)
+            (* Generate createElement with labeled arguments: 
+             * let createElement = (~arg1, ~arg2, ..., ()) => 
+             *   Element.createElement(() => make({arg1, arg2, ...}))
+             *)
+            
+            (* Build labeled parameters for createElement *)
+            let create_element_params =
+              List.map (fun (label, typ) ->
+                let param_type =
+                  match typ with
+                  | Some t -> Some t
+                  | None -> Some (
+                      Ast_builder.Default.ptyp_constr ~loc
+                        { txt = Lident "string"; loc }
+                        [])
+                in
+                Ast_builder.Default.pparam_val ~loc
+                  (Labelled label) None
+                  (match param_type with
+                  | Some t -> Ast_builder.Default.ppat_constraint ~loc
+                      (Ast_builder.Default.ppat_var ~loc { txt = label; loc })
+                      t
+                  | None -> Ast_builder.Default.ppat_var ~loc { txt = label; loc })
+              ) args
+              @
+              [Ast_builder.Default.pparam_val ~loc Nolabel None
+                 (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)]
+            in
+            
+            (* Build record expression for props: {arg1, arg2, ...} *)
+            let props_record =
+              Ast_builder.Default.pexp_record ~loc
+                (List.map (fun (label, _) ->
+                  ({ txt = Lident label; loc },
+                   Ast_builder.Default.pexp_ident ~loc { txt = Lident label; loc }))
+                args)
+                None
+            in
+            
             let create_element_body =
               let make_call = 
                 Ast_builder.Default.pexp_apply ~loc
                   (Ast_builder.Default.pexp_ident ~loc { txt = Lident "make"; loc })
-                  [(Nolabel, props_var)]
+                  [(Nolabel, props_record)]
               in
               let thunk =
                 Ast_builder.Default.pexp_fun ~loc Nolabel None
@@ -313,7 +334,8 @@ let component_mapper =
             in
             
             let create_element_fun =
-              Ast_builder.Default.pexp_fun ~loc Nolabel None props_pat create_element_body
+              Ast_builder.Default.pexp_function ~loc
+                create_element_params None (Pfunction_body create_element_body)
             in
             
             (* Add [@warning "-32"] to suppress unused warning *)

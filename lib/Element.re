@@ -1,38 +1,98 @@
+/*
+ * Element - Terminal UI element tree and rendering
+ *
+ * This module provides the core element types for building terminal UIs.
+ * Elements form a tree structure that gets rendered to ANSI-escaped strings.
+ *
+ * Element Types:
+ * - Text(string): Plain text content
+ * - Styled(style, t): Apply ANSI styling to an element
+ * - Column(list(t)): Stack children vertically (newline separated)
+ * - Row(list(t)): Stack children horizontally (concatenated)
+ * - Box(t, width, height, padding): Fixed-size container with padding
+ * - Lazy(unit => t): Deferred element (used by components)
+ * - WithContext(setup, teardown, t): Context boundary for providers
+ * - Empty: No content
+ *
+ * JSX Components:
+ * This module also exports JSX-compatible component modules:
+ * Text, Bold, Dim, Italic, Underline, Inverted, Column, Row, Box, Fragment
+ */
+
+/* Text styling options.
+ * These map to ANSI escape codes for terminal formatting.
+ */
 type style =
-  | Bold
-  | Dim
-  | Italic
-  | Underline
-  | Inverted
-  | FgColor(int)
-  | BgColor(int);
+  | Bold /* Bold/bright text */
+  | Dim /* Dimmed/faint text */
+  | Italic /* Italic text (terminal support varies) */
+  | Underline /* Underlined text */
+  | Inverted /* Inverted foreground/background colors */
+  | FgColor(int) /* 256-color foreground (0-255) */
+  | BgColor(int); /* 256-color background (0-255) */
 
+/* Element tree type.
+ * Represents the structure of a terminal UI before rendering.
+ */
 type t =
-  | Text(string)
-  | Styled(style, t)
-  | Column(list(t))
-  | Row(list(t))
-  | Empty
-  | Lazy(unit => t)
-  | Box(t, int, int, int) /* content, width, height, padding */
-  | WithContext(unit => unit, unit => unit, t); /* setup, teardown, children */
+  | Text(string) /* Plain text content */
+  | Styled(style, t) /* Apply styling to child element */
+  | Column(list(t)) /* Vertical stack (newline-separated) */
+  | Row(list(t)) /* Horizontal stack (concatenated) */
+  | Empty /* Empty element (renders to "") */
+  | Lazy(unit => t) /* Deferred element - thunk is called during render */
+  | Box(t, int, int, int) /* Box(content, width, height, padding) */
+  | WithContext(unit => unit, unit => unit, t); /* Context boundary: (setup, teardown, children) */
 
-/* Constructors */
+/* ============================================================================
+ * Element Constructors
+ * ============================================================================ */
+
+/* Create a text element */
 let text = (s: string): t => Text(s);
+
+/* Create a styled element */
 let styled = (style: style, el: t): t => Styled(style, el);
+
+/* Create a vertical column of elements */
 let column = (children: list(t)): t => Column(children);
+
+/* Create a horizontal row of elements */
 let row = (children: list(t)): t => Row(children);
+
+/* Empty element constant */
 let empty = Empty;
+
+/* Create a lazy element wrapping a render function.
+ * This is used by the component system to defer rendering.
+ * The thunk is called during Element.render().
+ */
 let createElement = (render: unit => t): t => Lazy(render);
 
-/* Style helpers */
+/* ============================================================================
+ * Style Helpers
+ * ============================================================================ */
+
+/* Apply bold styling */
 let bold = (el: t): t => Styled(Bold, el);
+
+/* Apply dim styling */
 let dim = (el: t): t => Styled(Dim, el);
+
+/* Apply italic styling */
 let italic = (el: t): t => Styled(Italic, el);
+
+/* Apply underline styling */
 let underline = (el: t): t => Styled(Underline, el);
+
+/* Apply inverted (reverse video) styling */
 let inverted = (el: t): t => Styled(Inverted, el);
 
-/* ANSI codes */
+/* ============================================================================
+ * ANSI Escape Code Utilities
+ * ============================================================================ */
+
+/* Convert a style to its ANSI escape code. */
 let styleToAnsi = (style: style): string => {
   switch (style) {
   | Bold => "\027[1m"
@@ -45,14 +105,22 @@ let styleToAnsi = (style: style): string => {
   };
 };
 
+/* ANSI reset code - clears all styling */
 let resetAnsi = "\027[0m";
 
-/* String helpers for layout */
+/* ============================================================================
+ * String Layout Utilities
+ * ============================================================================ */
+
+/* Split a string into lines. */
 let splitLines = (s: string): list(string) => {
   String.split_on_char('\n', s);
 };
 
-/* Calculate visible length (ignoring ANSI escape codes and handling UTF-8) */
+/* Calculate the visible length of a string.
+ * Ignores ANSI escape codes and correctly handles multi-byte UTF-8 characters.
+ * This is essential for proper terminal layout calculations.
+ */
 let visibleLength = (s: string): int => {
   let len = String.length(s);
   let rec loop = (i, visible, inEscape) =>
@@ -61,15 +129,14 @@ let visibleLength = (s: string): int => {
     } else {
       let c = Char.code(s.[i]);
       if (inEscape) {
-        /* End of escape sequence */
+        /* End of escape sequence when we hit a letter */
         if (c >= 65 && c <= 90 || c >= 97 && c <= 122) {
-          /* A-Z or a-z */
           loop(i + 1, visible, false);
         } else {
           loop(i + 1, visible, true);
         };
       } else if (c == 27) {
-        /* ESC */
+        /* ESC - start of escape sequence */
         loop(i + 1, visible, true);
       } else if (c >= 0x80 && c <= 0xBF) {
         /* UTF-8 continuation byte - don't count */
@@ -90,7 +157,11 @@ let visibleLength = (s: string): int => {
   loop(0, 0, false);
 };
 
-/* Pad or truncate string to exact visible width */
+/* Pad or truncate a string to an exact visible width.
+ * Handles ANSI escape codes and UTF-8 correctly.
+ * If truncating, appends a reset code to prevent style leaking.
+ * If padding, uses spaces.
+ */
 let padToWidth = (s: string, width: int): string => {
   let visible = visibleLength(s);
   if (visible >= width) {
@@ -105,28 +176,16 @@ let padToWidth = (s: string, width: int): string => {
         Buffer.add_char(buf, s.[i]);
         if (inEscape) {
           if (c >= 65 && c <= 90 || c >= 97 && c <= 122) {
-            /* A-Z or a-z - end of escape */
             loop(i + 1, visible, false);
           } else {
             loop(i + 1, visible, true);
           };
         } else if (c == 27) {
-          /* ESC */
           loop(i + 1, visible, true);
         } else if (c >= 0x80 && c <= 0xBF) {
-          /* UTF-8 continuation byte - don't count */
-          loop(
-            i + 1,
-            visible,
-            false,
-          );
+          loop(i + 1, visible, false);
         } else {
-          /* Regular character or UTF-8 start byte */
-          loop(
-            i + 1,
-            visible + 1,
-            false,
-          );
+          loop(i + 1, visible + 1, false);
         };
       };
     loop(0, 0, false);
@@ -137,7 +196,9 @@ let padToWidth = (s: string, width: int): string => {
   };
 };
 
-/* Repeat a string n times (works with multi-byte UTF-8) */
+/* Repeat a string n times.
+ * Works correctly with multi-byte UTF-8 strings.
+ */
 let repeatString = (s: string, n: int): string => {
   let buf = Buffer.create(String.length(s) * n);
   for (_ in 1 to n) {
@@ -146,7 +207,9 @@ let repeatString = (s: string, n: int): string => {
   Buffer.contents(buf);
 };
 
-/* Box drawing characters - solid lines (UTF-8) */
+/* Box drawing characters for terminal UIs.
+ * These are UTF-8 characters that render as solid lines.
+ */
 module BoxChars = {
   let topLeft = "┌";
   let topRight = "┐";
@@ -161,7 +224,25 @@ module BoxChars = {
   let cross = "┼";
 };
 
-/* Render element to string */
+/* ============================================================================
+ * Rendering
+ * ============================================================================ */
+
+/* Render an element tree to a string.
+ *
+ * This is the main rendering function that converts the element tree
+ * into an ANSI-escaped string suitable for terminal output.
+ *
+ * Rendering behavior by element type:
+ * - Text(s) -> the string as-is
+ * - Styled(style, child) -> ANSI code + render(child) + reset
+ * - Column(children) -> children joined with newlines
+ * - Row(children) -> children concatenated
+ * - Lazy(f) -> render(f()) - forces the thunk
+ * - WithContext(setup, teardown, children) -> setup(); render(children); teardown()
+ * - Box(...) -> formatted box with padding and size constraints
+ * - Empty -> empty string
+ */
 let rec render = (el: t): string => {
   switch (el) {
   | Empty => ""
@@ -187,7 +268,6 @@ let rec render = (el: t): string => {
     let padLines = (lines, targetHeight) => {
       let len = List.length(lines);
       if (len >= targetHeight) {
-        /* Take only what fits */
         let rec take = (n, lst) =>
           switch (n, lst) {
           | (0, _) => []
@@ -218,77 +298,157 @@ let rec render = (el: t): string => {
   };
 };
 
-/* JSX-compatible component modules */
+/* ============================================================================
+ * JSX-Compatible Component Modules
+ *
+ * These modules provide the interface expected by ReasonML's JSX syntax.
+ * Each has: type props, let make, let createElement
+ * ============================================================================ */
 
+/* Text component - renders plain text with optional inline styling.
+ *
+ * Usage:
+ *   <Text> "plain" </Text>
+ *   <Text bold=true> "bold text" </Text>
+ *   <Text bold=true dim=true> "bold and dim" </Text>
+ *   <Text fgColor=196> "red text" </Text>
+ */
 module Text = {
-  type props = {children: string};
-  let make = ({children}) => Text(children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Bold = {
-  type props = {children: t};
-  let make = ({children}) => Styled(Bold, children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Dim = {
-  type props = {children: t};
-  let make = ({children}) => Styled(Dim, children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Italic = {
-  type props = {children: t};
-  let make = ({children}) => Styled(Italic, children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Underline = {
-  type props = {children: t};
-  let make = ({children}) => Styled(Underline, children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Inverted = {
-  type props = {children: t};
-  let make = ({children}) => Styled(Inverted, children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Column = {
-  type props = {children: list(t)};
-  let make = ({children}) => Column(children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Row = {
-  type props = {children: list(t)};
-  let make = ({children}) => Row(children);
-  let createElement = props => Lazy(() => make(props));
-};
-
-module Box = {
   type props = {
-    children: t,
-    width: int,
-    height: int,
-    padding: option(int),
+    children: string,
+    bold: bool,
+    dim: bool,
+    italic: bool,
+    underline: bool,
+    inverted: bool,
+    fgColor: option(int),
+    bgColor: option(int),
   };
-  let make = ({children, width, height, padding}) => {
-    let pad =
-      switch (padding) {
-      | Some(p) => p
-      | None => 0
-      };
-    Box(children, width, height, pad);
+
+  /* Default props for simple <Text> usage */
+  let defaultProps = {
+    children: "",
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+    inverted: false,
+    fgColor: None,
+    bgColor: None,
   };
-  let createElement = props => Lazy(() => make(props));
+
+  let make = props => {
+    let el = ref(Text(props.children));
+
+    /* Apply styles in reverse order so they nest correctly */
+    switch (props.bgColor) {
+    | Some(c) => el := Styled(BgColor(c), el^)
+    | None => ()
+    };
+    switch (props.fgColor) {
+    | Some(c) => el := Styled(FgColor(c), el^)
+    | None => ()
+    };
+    if (props.inverted) {
+      el := Styled(Inverted, el^);
+    };
+    if (props.underline) {
+      el := Styled(Underline, el^);
+    };
+    if (props.italic) {
+      el := Styled(Italic, el^);
+    };
+    if (props.dim) {
+      el := Styled(Dim, el^);
+    };
+    if (props.bold) {
+      el := Styled(Bold, el^);
+    };
+
+    el^;
+  };
+
+  /* createElement using labeled args with defaults for JSX compatibility */
+  let createElement =
+      (
+        ~bold=false,
+        ~dim=false,
+        ~italic=false,
+        ~underline=false,
+        ~inverted=false,
+        ~fgColor=?,
+        ~bgColor=?,
+        ~children,
+        (),
+      ) =>
+    Lazy(
+      () =>
+        make({
+          children,
+          bold,
+          dim,
+          italic,
+          underline,
+          inverted,
+          fgColor,
+          bgColor,
+        }),
+    );
 };
 
-/* Fragment - groups children without adding structure (renders as Column) */
+/* Bold component - renders children in bold */
+module Bold = {
+  let make = (~children, ()) => Styled(Bold, children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Dim component - renders children dimmed */
+module Dim = {
+  let make = (~children, ()) => Styled(Dim, children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Italic component - renders children italic */
+module Italic = {
+  let make = (~children, ()) => Styled(Italic, children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Underline component - renders children underlined */
+module Underline = {
+  let make = (~children, ()) => Styled(Underline, children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Inverted component - renders children with inverted colors */
+module Inverted = {
+  let make = (~children, ()) => Styled(Inverted, children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Column component - stacks children vertically */
+module Column = {
+  let make = (~children, ()) => Column(children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Row component - stacks children horizontally */
+module Row = {
+  let make = (~children, ()) => Row(children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+};
+
+/* Box component - fixed-size container with optional padding */
+module Box = {
+  let make = (~children, ~width, ~height, ~padding=0, ()) => {
+    Box(children, width, height, padding);
+  };
+  let createElement = (~children, ~width, ~height, ~padding=0, ()) =>
+    Lazy(() => make(~children, ~width, ~height, ~padding, ()));
+};
+
+/* Fragment component - groups children without adding structure (renders as Column) */
 module Fragment = {
-  type props = {children: list(t)};
-  let make = ({children}) => Column(children);
-  let createElement = props => Lazy(() => make(props));
+  let make = (~children, ()) => Column(children);
+  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
 };
