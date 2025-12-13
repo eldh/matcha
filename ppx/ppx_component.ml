@@ -150,7 +150,7 @@ let component_mapper =
                    ~expr:transformed_body]
             in
 
-            (* Generate createElement: let createElement = () => Element.createElement(() => make()) *)
+            (* Generate createElement: let createElement = () => Element.createComponent((), () => make()) *)
             let unit_pat = Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None in
             let unit_expr = Ast_builder.Default.pexp_construct ~loc { txt = Lident "()"; loc } None in
             
@@ -160,13 +160,14 @@ let component_mapper =
                   (Ast_builder.Default.pexp_ident ~loc { txt = Lident "make"; loc })
                   [(Nolabel, unit_expr)]
               in
-              let thunk =
+              let render_thunk =
                 Ast_builder.Default.pexp_fun ~loc Nolabel None unit_pat make_call
               in
               Ast_builder.Default.pexp_apply ~loc
                 (Ast_builder.Default.pexp_ident ~loc 
-                   { txt = Ldot (Lident "Element", "createElement"); loc })
-                [(Nolabel, thunk)]
+                   { txt = Ldot (Lident "Element", "createComponent"); loc })
+                [Nolabel, unit_expr;
+                 Nolabel, render_thunk]
             in
             
             let create_element_fun =
@@ -316,21 +317,24 @@ let component_mapper =
                 None
             in
             
+            let make_call = 
+              Ast_builder.Default.pexp_apply ~loc
+                (Ast_builder.Default.pexp_ident ~loc { txt = Lident "make"; loc })
+                [(Nolabel, props_record)]
+            in
+            let render_thunk =
+              Ast_builder.Default.pexp_fun ~loc Nolabel None
+                (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)
+                make_call
+            in
+            
+            (* Create Component element: Element.createComponent(props, renderFn) *)
             let create_element_body =
-              let make_call = 
-                Ast_builder.Default.pexp_apply ~loc
-                  (Ast_builder.Default.pexp_ident ~loc { txt = Lident "make"; loc })
-                  [(Nolabel, props_record)]
-              in
-              let thunk =
-                Ast_builder.Default.pexp_fun ~loc Nolabel None
-                  (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)
-                  make_call
-              in
               Ast_builder.Default.pexp_apply ~loc
                 (Ast_builder.Default.pexp_ident ~loc 
-                   { txt = Ldot (Lident "Element", "createElement"); loc })
-                [(Nolabel, thunk)]
+                   { txt = Ldot (Lident "Element", "createComponent"); loc })
+                [Nolabel, props_record;
+                 Nolabel, render_thunk]
             in
             
             let create_element_fun =

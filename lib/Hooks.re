@@ -43,11 +43,31 @@ type renderContext = {
   mutable keyHandlers: list((Key.t, Key.modifiers) => unit), /* Active handlers */
   mutable pendingEffects: list(pendingEffect), /* Effects to run post-render */
   mutable needsRerender: bool, /* Whether to re-render */
+  componentId: option(Element.componentId), /* Component instance ID if this is a component context */
   quit: quitBehavior => unit /* Quit callback */
+};
+
+/* Component context registry - maps component IDs to their render contexts */
+let componentContexts: Hashtbl.t(Element.componentId, renderContext) =
+  Hashtbl.create(100);
+
+/* Component props registry - maps component IDs to their previous props for comparison */
+let componentProps: Hashtbl.t(Element.componentId, Obj.t) =
+  Hashtbl.create(100);
+
+/* Generate a new unique component ID - delegates to Element to avoid circular dependency */
+let generateComponentId = (): Element.componentId => {
+  Element.generateComponentId();
 };
 
 /* Global current context (set during render) */
 let currentContext: ref(option(renderContext)) = ref(None);
+
+/* Global current component ID (set during component rendering) */
+let currentComponentId: ref(option(Element.componentId)) = ref(None);
+
+/* Global root context reference (set when Runtime.start is called) */
+let rootContext: ref(option(renderContext)) = ref(None);
 
 /* Get the current render context (internal - fails if not in render) */
 let getContext = () => {
@@ -83,7 +103,20 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
 
     let setState = (newValue: 'a) => {
       stateRef := Obj.repr(newValue);
-      ctx.needsRerender = true;
+      /* Only mark this component's context as needing re-render */
+      switch (ctx.componentId) {
+      | Some(_id) =>
+        /* Component context - mark only this component */
+        ctx.needsRerender = true;
+        /* Also mark root context to trigger render loop */
+        switch (rootContext^) {
+        | Some(rootCtx) => rootCtx.needsRerender = true
+        | None => ()
+        };
+      | None =>
+        /* Root context - mark for full re-render */
+        ctx.needsRerender = true
+      };
     };
     (initial, setState);
   } else {
@@ -92,7 +125,20 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
     | StateHook(stateRef) =>
       let setState = (newValue: 'a) => {
         stateRef := Obj.repr(newValue);
-        ctx.needsRerender = true;
+        /* Only mark this component's context as needing re-render */
+        switch (ctx.componentId) {
+        | Some(_id) =>
+          /* Component context - mark only this component */
+          ctx.needsRerender = true;
+          /* Also mark root context to trigger render loop */
+          switch (rootContext^) {
+          | Some(rootCtx) => rootCtx.needsRerender = true
+          | None => ()
+          };
+        | None =>
+          /* Root context - mark for full re-render */
+          ctx.needsRerender = true
+        };
       };
       (Obj.magic(stateRef^), setState);
     | EffectHook(_, _) => failwith("Hook type mismatch: expected StateHook")
@@ -257,7 +303,77 @@ let createContext = (quit: quitBehavior => unit): renderContext => {
     keyHandlers: [],
     pendingEffects: [],
     needsRerender: true,
+    componentId: None, /* Root context has no component ID */
     quit,
+  };
+};
+
+/* Create a render context for a component instance.
+ * Called when a component is first rendered. (internal)
+ */
+let createComponentContext =
+    (componentId: Element.componentId, quit: quitBehavior => unit)
+    : renderContext => {
+  let ctx = {
+    hookIndex: 0,
+    hooks: [||],
+    keyHandlers: [],
+    pendingEffects: [],
+    needsRerender: true,
+    componentId: Some(componentId),
+    quit,
+  };
+  Hashtbl.add(componentContexts, componentId, ctx);
+  ctx;
+};
+
+/* Get the render context for a component instance. (internal) */
+let getComponentContext =
+    (componentId: Element.componentId): option(renderContext) =>
+  try(Some(Hashtbl.find(componentContexts, componentId))) {
+  | Not_found => None
+  };
+
+/* Check if a component needs re-rendering based on state changes. (internal) */
+let componentNeedsRerender = (componentId: Element.componentId): bool => {
+  switch (getComponentContext(componentId)) {
+  | Some(ctx) => ctx.needsRerender
+  | None => true /* Component not rendered yet - needs initial render */
+  };
+};
+
+/* Check if props have changed by comparing with previous props. (internal) */
+let propsChanged = (componentId: Element.componentId, newProps: Obj.t): bool =>
+  try({
+    let prevProps = Hashtbl.find(componentProps, componentId);
+    /* Use physical pointer comparison via Obj.magic to avoid comparing function values */
+    /* Convert Obj.t to nativeint (pointer) and compare - safe even with functions */
+    let prevPtr: nativeint = Obj.magic(prevProps);
+    let newPtr: nativeint = Obj.magic(newProps);
+    prevPtr != newPtr;
+  }) {
+  | Not_found => true /* No previous props - treat as changed */
+  };
+
+/* Update stored props for a component. (internal) */
+let updateComponentProps =
+    (componentId: Element.componentId, props: Obj.t): unit => {
+  Hashtbl.replace(componentProps, componentId, props);
+};
+
+/* Check if a component needs re-rendering (props changed OR state changed). (internal) */
+let shouldRerenderComponent =
+    (componentId: Element.componentId, newProps: Obj.t): bool => {
+  let stateChanged = componentNeedsRerender(componentId);
+  let propsChanged = propsChanged(componentId, newProps);
+  stateChanged || propsChanged;
+};
+
+/* Mark a component as rendered (clears needsRerender flag). (internal) */
+let markComponentRendered = (componentId: Element.componentId): unit => {
+  switch (getComponentContext(componentId)) {
+  | Some(ctx) => ctx.needsRerender = false
+  | None => ()
   };
 };
 
@@ -268,6 +384,22 @@ let beginRender = (ctx: renderContext): unit => {
   ctx.hookIndex = 0;
   ctx.keyHandlers = [];
   ctx.pendingEffects = [];
+};
+
+/* Collect key handlers from all component contexts into the root context.
+ * This ensures handlers registered in components are available for event dispatch.
+ */
+let collectKeyHandlers = (rootCtx: renderContext): unit => {
+  /* Collect handlers from all component contexts */
+  Hashtbl.iter(
+    (_componentId, componentCtx) => {
+      rootCtx.keyHandlers =
+        List.rev_append(componentCtx.keyHandlers, rootCtx.keyHandlers)
+    },
+    componentContexts,
+  );
+  /* Reverse to maintain registration order (most recent first, but we want first registered first) */
+  rootCtx.keyHandlers = List.rev(rootCtx.keyHandlers);
 };
 
 /* Run pending effects after render completes.

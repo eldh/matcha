@@ -31,6 +31,19 @@ type style =
   | FgColor(int) /* 256-color foreground (0-255) */
   | BgColor(int); /* 256-color background (0-255) */
 
+/* Component instance identifier - defined here for Element, but also used by Hooks */
+type componentId = int;
+
+/* Counter for generating unique component IDs */
+let nextComponentId = ref(0);
+
+/* Generate a new unique component ID */
+let generateComponentId = (): componentId => {
+  let id = nextComponentId^;
+  nextComponentId := id + 1;
+  id;
+};
+
 /* Element tree type.
  * Represents the structure of a terminal UI before rendering.
  */
@@ -41,6 +54,13 @@ type t =
   | Row(list(t)) /* Horizontal stack (concatenated) */
   | Empty /* Empty element (renders to "") */
   | Lazy(unit => t) /* Deferred element - thunk is called during render */
+  | Component(
+      componentId,
+      Obj.t,
+      unit => t,
+      ref(option(string)),
+      ref(option(componentId)),
+    ) /* Component instance: (id, props, renderFn, cachedOutput, stableIdRef) */
   | Box(t, int, int, int) /* Box(content, width, height, padding) */
   | WithContext(unit => unit, unit => unit, t); /* Context boundary: (setup, teardown, children) */
 
@@ -68,6 +88,20 @@ let empty = Empty;
  * The thunk is called during Element.render().
  */
 let createElement = (render: unit => t): t => Lazy(render);
+
+/* Create a component element with props for selective re-rendering.
+ * This is used by the component system to track component instances
+ * and enable prop-based memoization.
+ * The component ID will be assigned by Runtime based on position in tree.
+ */
+let createComponent = (props: 'a, renderFn: unit => t): t => {
+  let propsObj = Obj.repr(props);
+  /* ID will be assigned by Runtime based on position in tree */
+  let id = (-1); /* Temporary ID, will be replaced during render */
+  let cachedOutput = ref(None);
+  let stableIdRef = ref(None); /* Store stable ID across renders */
+  Component(id, propsObj, renderFn, cachedOutput, stableIdRef);
+};
 
 /* ============================================================================
  * Style Helpers
@@ -239,6 +273,7 @@ module BoxChars = {
  * - Column(children) -> children joined with newlines
  * - Row(children) -> children concatenated
  * - Lazy(f) -> render(f()) - forces the thunk
+ * - Component(id, f, cache) -> checks if component needs re-render, uses cache if not
  * - WithContext(setup, teardown, children) -> setup(); render(children); teardown()
  * - Box(...) -> formatted box with padding and size constraints
  * - Empty -> empty string
@@ -251,6 +286,16 @@ let rec render = (el: t): string => {
   | Column(children) => children |> List.map(render) |> String.concat("\n")
   | Row(children) => children |> List.map(render) |> String.concat("")
   | Lazy(f) => render(f())
+  | Component(_id, _props, renderFn, cachedOutput, _stableIdRef) =>
+    /* Component rendering is handled by Runtime to avoid circular dependency.
+     * For now, always render (Runtime will handle caching and selective re-rendering) */
+    switch (cachedOutput^) {
+    | Some(cached) => cached
+    | None =>
+      let result = render(renderFn());
+      cachedOutput := Some(result);
+      result;
+    }
   | WithContext(setup, teardown, children) =>
     setup();
     let result = render(children);
