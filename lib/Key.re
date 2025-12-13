@@ -7,6 +7,10 @@ type t =
   | Escape
   | Enter
   | Backspace
+  | Tab
+  | Delete
+  | KillLine /* Ctrl+U - clear line */
+  | KillWord /* Ctrl+W - delete word */
   | Unknown;
 
 type modifiers = {
@@ -33,9 +37,14 @@ let parse = (bytes: bytes, len: int): (t, modifiers) =>
     | 27 => (Escape, noModifiers)
     | 10
     | 13 => (Enter, noModifiers) /* Both \n and \r */
-    | 127 => (Backspace, noModifiers)
+    | 8 => (Backspace, noModifiers) /* Ctrl+H is traditionally backspace */
+    | 127 => (Backspace, noModifiers) /* DEL key / backspace */
+    | 9 => (Tab, noModifiers) /* Tab key (Ctrl+I) */
+    | 21 => (KillLine, noModifiers) /* Ctrl+U - kill/clear line */
+    | 23 => (KillWord, noModifiers) /* Ctrl+W - kill/delete word */
     | _ when code >= 1 && code <= 26 =>
       /* Ctrl+key (codes 1-26 map to Ctrl+A through Ctrl+Z) */
+      /* Note: 8, 9, 21, 23 are handled above as special keys */
       let letter = Char.chr(code + 96); /* Convert to lowercase letter */
       (
         Char(letter),
@@ -56,6 +65,10 @@ let parse = (bytes: bytes, len: int): (t, modifiers) =>
     | 'B' => (Arrow_down, noModifiers)
     | 'C' => (Arrow_right, noModifiers)
     | 'D' => (Arrow_left, noModifiers)
+    | '3' when len >= 4 && Bytes.get(bytes, 3) == '~' => (
+        Delete,
+        noModifiers,
+      )
     | _ => (Unknown, noModifiers)
     };
   } else if (len >= 2 && Bytes.get(bytes, 0) == '\027') {

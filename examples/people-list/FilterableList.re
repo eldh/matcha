@@ -19,6 +19,43 @@ let stringContains = (haystack, needle) => {
   };
 };
 
+/* Delete the last word from a string (Ctrl+W behavior) */
+let deleteLastWord = (s: string): string => {
+  let len = String.length(s);
+  if (len == 0) {
+    "";
+  } else {
+    /* First, skip trailing spaces */
+    let rec skipSpaces = i =>
+      if (i < 0) {
+        0;
+      } else if (s.[i] == ' ') {
+        skipSpaces(i - 1);
+      } else {
+        i;
+      };
+
+    /* Then, skip the word characters */
+    let rec skipWord = i =>
+      if (i < 0) {
+        0;
+      } else if (s.[i] != ' ') {
+        skipWord(i - 1);
+      } else {
+        i + 1;
+      };
+
+    let afterSpaces = skipSpaces(len - 1);
+    let wordStart = skipWord(afterSpaces);
+
+    if (wordStart <= 0) {
+      "";
+    } else {
+      String.sub(s, 0, wordStart);
+    };
+  };
+};
+
 let filterItems = (items, getFilterText, filter) =>
   if (String.length(filter) == 0) {
     items;
@@ -74,10 +111,20 @@ let make =
         setFilter(String.sub(filter, 0, String.length(filter) - 1));
         setSelectedIndex(0);
       }
-    | (Key.Char('u'), {Key.ctrl: true, _}) =>
+    | (Key.KillLine, _) =>
       /* Ctrl+U clears the entire filter (standard terminal shortcut) */
       setFilter("");
       setSelectedIndex(0);
+    | (Key.KillWord, _) =>
+      /* Ctrl+W deletes the last word */
+      setFilter(deleteLastWord(filter));
+      setSelectedIndex(0);
+    | (Key.Delete, _) =>
+      /* Delete key also clears filter (alternative to backspace) */
+      if (String.length(filter) > 0) {
+        setFilter(String.sub(filter, 0, String.length(filter) - 1));
+        setSelectedIndex(0);
+      }
     | (Key.Char(c), {Key.ctrl: false, alt: false, _}) =>
       setFilter(filter ++ String.make(1, c));
       setSelectedIndex(0);
