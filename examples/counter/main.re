@@ -19,9 +19,18 @@ let make = () => {
     }
   });
 
-  let countText = string_of_int(count);
-  let barWidth = min(count, 50);
-  let bar = String.make(barWidth, '#');
+  /* Memoize derived strings so we don't rebuild them unnecessarily */
+  let (countText, bar) =
+    Hooks.useMemo(
+      () => {
+        let barWidth = min(count, 50);
+        (
+          string_of_int(count),
+          String.make(barWidth, '#') ++ String.make(50 - barWidth, ' '),
+        );
+      },
+      [|count|],
+    );
 
   <Column>
     <Bold> <Text> "Counter Example" </Text> </Bold>
@@ -31,9 +40,7 @@ let make = () => {
       <Bold> <Text> countText </Text> </Bold>
     </Row>
     <Text> "\n" </Text>
-    <Dim>
-      <Text> {"[" ++ bar ++ String.make(50 - barWidth, ' ') ++ "]"} </Text>
-    </Dim>
+    <Dim> <Text> {"[" ++ bar ++ "]"} </Text> </Dim>
     <Text> "\n\n" </Text>
     <Dim>
       <Text> "↑/k: Increment  ↓/j: Decrement  r: Reset  q: Quit" </Text>

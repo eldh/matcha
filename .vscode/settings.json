@@ -1,3 +1,11 @@
 {
-  "cSpell.words": ["failwith", "mapi", "Rere", "sprintf"]
+  "cSpell.words": [
+    "failwith",
+    "Hashtbl",
+    "mapi",
+    "Matcha",
+    "Rere",
+    "SIGWINCH",
+    "sprintf"
+  ]
 }

@@ -6,7 +6,7 @@ A React-like terminal UI library for ReasonML/OCaml. Build interactive command-l
 
 - **React-like API**: Components, hooks (`useState`, `useEffect`), and JSX syntax
 - **Declarative UI**: Describe your UI as a tree of elements
-- **Built-in hooks**: `useState`, `useEffect`, `useKeyDown`, `useQuit`
+- **Built-in hooks**: `useState`, `useEffect`, `useMemo`, `useKeyDown`, `useQuit`
 - **Context API**: Share state across components without prop drilling
 - **Layout primitives**: `Column`, `Row`, `Box`, `SplitView`
 - **Styling**: Bold, dim, italic, underline, inverted text
@@ -115,6 +115,16 @@ Hooks.useEffectAlways(() => {
   // Effect code
   None
 });
+```
+
+#### useMemo
+
+```reason
+// Memoize a computed value until dependencies change
+let memoizedValue =
+  Hooks.useMemo(() => {
+    // Expensive calculation
+  }, [|dependency1, dependency2|]);
 ```
 
 #### useKeyDown

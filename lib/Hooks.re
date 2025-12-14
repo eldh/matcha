@@ -9,6 +9,7 @@
  * - useState: Local component state
  * - useEffect: Side effects with dependency tracking
  * - useEffectAlways: Side effects that run every render
+ * - useMemo: Memoize values based on dependencies
  * - useKeyDown: Register keyboard event handlers
  * - useQuit: Get a function to quit the application
  */
@@ -18,7 +19,8 @@
  */
 type hookValue =
   | StateHook(ref(Obj.t))
-  | EffectHook(ref(option(array(Obj.t))), ref(option(unit => unit)));
+  | EffectHook(ref(option(array(Obj.t))), ref(option(unit => unit)))
+  | MemoHook(ref(option((Obj.t, array(Obj.t))))); /* cached value + deps */
 /* EffectHook stores: (previous deps for comparison, cleanup function) */
 
 /* Pending effect to be run after render (internal) */
@@ -142,6 +144,7 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
       };
       (Obj.magic(stateRef^), setState);
     | EffectHook(_, _) => failwith("Hook type mismatch: expected StateHook")
+    | MemoHook(_) => failwith("Hook type mismatch: expected StateHook")
     };
   };
 };
@@ -162,6 +165,52 @@ let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
       };
       equal^;
     }
+  };
+};
+
+/* Memoize a computed value until dependencies change.
+ *
+ * The function runs during render when dependencies differ from the
+ * previous render. The returned value is cached in the hook state and
+ * reused while dependencies are equal (physical equality via Obj.repr).
+ *
+ * Example:
+ *   let expensive = Hooks.useMemo(() => doWork(data), [|data|]);
+ */
+let useMemo = (compute: unit => 'a, deps: array('b)): 'a => {
+  let ctx = getContext();
+  let idx = ctx.hookIndex;
+  ctx.hookIndex = idx + 1;
+
+  let depsObj = Array.map(Obj.repr, deps);
+
+  let recalc = (memoRef: ref(option((Obj.t, array(Obj.t))))) => {
+    let value = compute();
+    memoRef := Some((Obj.repr(value), depsObj));
+    value;
+  };
+
+  if (idx >= Array.length(ctx.hooks)) {
+    /* First render - compute and store */
+    let memoRef = ref(None);
+    let value = recalc(memoRef);
+    ctx.hooks = Array.append(ctx.hooks, [|MemoHook(memoRef)|]);
+    value;
+  } else {
+    switch (ctx.hooks[idx]) {
+    | MemoHook(memoRef) =>
+      switch (memoRef^) {
+      | Some((cachedValue, prevDeps)) =>
+        if (depsEqual(Some(prevDeps), depsObj)) {
+          Obj.magic(cachedValue);
+        } else {
+          recalc(memoRef);
+        }
+      | None => recalc(memoRef)
+      }
+    | StateHook(_) => failwith("Hook type mismatch: expected MemoHook")
+    | EffectHook(_, _) => failwith("Hook type mismatch: expected MemoHook")
+    };
   };
 };
 
@@ -216,6 +265,7 @@ let useEffect =
         prevDepsRef := Some(depsObj);
       }
     | StateHook(_) => failwith("Hook type mismatch: expected EffectHook")
+    | MemoHook(_) => failwith("Hook type mismatch: expected EffectHook")
     };
   };
 };
@@ -254,6 +304,7 @@ let useEffectAlways = (effect: unit => option(unit => unit)): unit => {
         ...ctx.pendingEffects,
       ]
     | StateHook(_) => failwith("Hook type mismatch: expected EffectHook")
+    | MemoHook(_) => failwith("Hook type mismatch: expected EffectHook")
     };
   };
 };
@@ -409,7 +460,7 @@ let collectKeyHandlers = (rootCtx: renderContext): unit => {
 let runEffects = (ctx: renderContext): unit => {
   let effects = List.rev(ctx.pendingEffects);
   List.iter(
-    ({effect, cleanup}) => {
+    ({ effect, cleanup }) => {
       switch (cleanup^) {
       | Some(cleanupFn) => cleanupFn()
       | None => ()
@@ -434,6 +485,7 @@ let runCleanups = (ctx: renderContext): unit => {
         | None => ()
         }
       | StateHook(_) => ()
+      | MemoHook(_) => ()
       }
     },
     ctx.hooks,
