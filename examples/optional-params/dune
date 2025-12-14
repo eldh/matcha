@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name matcha-example-optional-params)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))

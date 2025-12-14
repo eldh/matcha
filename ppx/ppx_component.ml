@@ -104,6 +104,7 @@ let component_mapper =
 
           (* Extract the function and its labeled arguments *)
           (* OCaml 5.3+ / ppxlib with 5.2 AST: Pexp_function with function_param list *)
+          (* Track whether each param was optional so we can preserve it in createElement signature and props type. *)
           let rec extract_args expr acc =
             match expr.pexp_desc with
             | Pexp_function (params, _constraint, Pfunction_body body) ->
@@ -116,14 +117,14 @@ let component_mapper =
                         | Ppat_constraint (_, t) -> Some t
                         | _ -> None
                       in
-                      Some (label, typ)
+                      Some (label, typ, false)
                   | Pparam_val (Optional label, _default, pat) ->
                       let typ =
                         match pat.ppat_desc with
                         | Ppat_constraint (_, t) -> Some t
                         | _ -> None
                       in
-                      Some (label, typ)
+                      Some (label, typ, true)
                   | Pparam_val (Nolabel, _, _) -> None
                   | Pparam_newtype _ -> None
                 ) params in
@@ -202,7 +203,7 @@ let component_mapper =
           else
             (* Collect type variables from all argument types *)
             let type_vars = 
-              List.fold_left (fun acc (_, typ) ->
+              List.fold_left (fun acc (_, typ, _) ->
                 match typ with
                 | Some t -> collect_type_vars t acc
                 | None -> acc
@@ -211,22 +212,27 @@ let component_mapper =
             in
             
             (* Generate props record type with type parameters *)
-            let props_fields =
-              List.map
-                (fun (label, typ) ->
-                  let field_type =
-                    match typ with
-                    | Some t -> t
-                    | None ->
-                        Ast_builder.Default.ptyp_constr ~loc
-                          { txt = Lident "string"; loc }
-                          []
-                  in
-                  Ast_builder.Default.label_declaration ~loc
-                    ~name:{ txt = label; loc }
-                    ~mutable_:Immutable ~type_:field_type)
-                args
-            in
+          let option_type t =
+            Ast_builder.Default.ptyp_constr ~loc { txt = Lident "option"; loc } [t]
+          in
+
+          let props_fields =
+            List.map
+              (fun (label, typ, is_optional) ->
+                let base_type =
+                  match typ with
+                  | Some t -> t
+                  | None ->
+                      Ast_builder.Default.ptyp_constr ~loc
+                        { txt = Lident "string"; loc }
+                        []
+                in
+                let field_type = if is_optional then option_type base_type else base_type in
+                Ast_builder.Default.label_declaration ~loc
+                  ~name:{ txt = label; loc }
+                  ~mutable_:Immutable ~type_:field_type)
+              args
+          in
 
             (* Create type parameters for the props type *)
             let type_params = 
@@ -250,7 +256,7 @@ let component_mapper =
             let destructure_pat =
               Ast_builder.Default.ppat_record ~loc
                 (List.map
-                   (fun (label, _) ->
+                   (fun (label, _, _) ->
                      ({ txt = Lident label; loc }, 
                       Ast_builder.Default.ppat_var ~loc { txt = label; loc }))
                    args)
@@ -284,33 +290,36 @@ let component_mapper =
              *)
             
             (* Build labeled parameters for createElement *)
-            let create_element_params =
-              List.map (fun (label, typ) ->
-                let param_type =
-                  match typ with
-                  | Some t -> Some t
-                  | None -> Some (
-                      Ast_builder.Default.ptyp_constr ~loc
-                        { txt = Lident "string"; loc }
-                        [])
-                in
-                Ast_builder.Default.pparam_val ~loc
-                  (Labelled label) None
-                  (match param_type with
-                  | Some t -> Ast_builder.Default.ppat_constraint ~loc
-                      (Ast_builder.Default.ppat_var ~loc { txt = label; loc })
-                      t
-                  | None -> Ast_builder.Default.ppat_var ~loc { txt = label; loc })
-              ) args
-              @
-              [Ast_builder.Default.pparam_val ~loc Nolabel None
-                 (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)]
-            in
+          let create_element_params =
+            List.map (fun (label, typ, is_optional) ->
+              let base_type =
+                match typ with
+                | Some t -> t
+                | None ->
+                    Ast_builder.Default.ptyp_constr ~loc
+                      { txt = Lident "string"; loc }
+                      []
+              in
+              let param_type = if is_optional then option_type base_type else base_type in
+              let pattern =
+                Ast_builder.Default.ppat_constraint ~loc
+                  (Ast_builder.Default.ppat_var ~loc { txt = label; loc })
+                  param_type
+              in
+              Ast_builder.Default.pparam_val ~loc
+                (if is_optional then Optional label else Labelled label)
+                None
+                pattern
+            ) args
+            @
+            [Ast_builder.Default.pparam_val ~loc Nolabel None
+               (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)]
+          in
             
             (* Build record expression for props: {arg1, arg2, ...} *)
             let props_record =
               Ast_builder.Default.pexp_record ~loc
-                (List.map (fun (label, _) ->
+                (List.map (fun (label, _, _) ->
                   ({ txt = Lident label; loc },
                    Ast_builder.Default.pexp_ident ~loc { txt = Lident label; loc }))
                 args)
