@@ -491,3 +491,25 @@ let runCleanups = (ctx: renderContext): unit => {
     ctx.hooks,
   );
 };
+
+/* Remove component contexts that were not rendered in the latest pass.
+ * Runs cleanups for those contexts and drops their stored props to
+ * prevent key handlers or effects from leaking after unmount.
+ */
+let cleanupUnmountedComponents =
+    (activeComponentIds: list(Element.componentId)): unit => {
+  /* Track currently active IDs for quick membership checks */
+  let activeSet: Hashtbl.t(Element.componentId, unit) =
+    Hashtbl.create(Hashtbl.length(componentContexts) + 10);
+  List.iter(id => Hashtbl.replace(activeSet, id, ()), activeComponentIds);
+
+  Hashtbl.iter(
+    (componentId, ctx) =>
+      if (!Hashtbl.mem(activeSet, componentId)) {
+        runCleanups(ctx);
+        Hashtbl.remove(componentContexts, componentId);
+        Hashtbl.remove(componentProps, componentId);
+      },
+    componentContexts,
+  );
+};

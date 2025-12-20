@@ -56,11 +56,12 @@ type t =
   | Lazy(unit => t) /* Deferred element - thunk is called during render */
   | Component(
       componentId,
+      option(string),
       Obj.t,
       unit => t,
       ref(option(string)),
       ref(option(componentId)),
-    ) /* Component instance: (id, props, renderFn, cachedOutput, stableIdRef) */
+    ) /* Component instance: (id, key, props, renderFn, cachedOutput, stableIdRef) */
   | Box(t, int, int, int) /* Box(content, width, height, padding) */
   | WithContext(unit => unit, unit => unit, t); /* Context boundary: (setup, teardown, children) */
 
@@ -93,14 +94,16 @@ let createElement = (render: unit => t): t => Lazy(render);
  * This is used by the component system to track component instances
  * and enable prop-based memoization.
  * The component ID will be assigned by Runtime based on position in tree.
+ * An optional key can be provided to force instance identity changes,
+ * mirroring React's key semantics.
  */
-let createComponent = (props: 'a, renderFn: unit => t): t => {
+let createComponent = (~key=?, props: 'a, renderFn: unit => t): t => {
   let propsObj = Obj.repr(props);
   /* ID will be assigned by Runtime based on position in tree */
   let id = (-1); /* Temporary ID, will be replaced during render */
   let cachedOutput = ref(None);
   let stableIdRef = ref(None); /* Store stable ID across renders */
-  Component(id, propsObj, renderFn, cachedOutput, stableIdRef);
+  Component(id, key, propsObj, renderFn, cachedOutput, stableIdRef);
 };
 
 /* ============================================================================
@@ -286,7 +289,7 @@ let rec render = (el: t): string => {
   | Column(children) => children |> List.map(render) |> String.concat("\n")
   | Row(children) => children |> List.map(render) |> String.concat("")
   | Lazy(f) => render(f())
-  | Component(_id, _props, renderFn, cachedOutput, _stableIdRef) =>
+  | Component(_id, _key, _props, renderFn, cachedOutput, _stableIdRef) =>
     /* Component rendering is handled by Runtime to avoid circular dependency.
      * For now, always render (Runtime will handle caching and selective re-rendering) */
     switch (cachedOutput^) {

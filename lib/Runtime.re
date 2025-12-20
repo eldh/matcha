@@ -24,28 +24,42 @@ module type HooksComponent = {
 /* Component instance counter for stable IDs based on tree position */
 let componentCounter = ref(0);
 
+/* Track which component IDs were rendered in the current pass */
+let renderedComponentIds: ref(list(Element.componentId)) = ref([]);
+
+/* Position + optional key uniquely identifies a component instance location */
+type componentPositionKey = (int, option(string));
+
 /* Registry mapping component instances (by position) to stable IDs */
-let componentIdRegistry: Hashtbl.t(int, Element.componentId) =
+let componentIdRegistry: Hashtbl.t(componentPositionKey, Element.componentId) =
   Hashtbl.create(100);
 
 /* Reset component tracking at start of render */
 let resetComponentTracking = (): unit => {
   componentCounter := 0;
-                       /* Don't clear registry - keep it persistent so component IDs are stable across renders */
+  renderedComponentIds := [];
+  /* Don't clear registry - keep it persistent so component IDs are stable across renders */
 };
 
-/* Generate stable component ID based on position in tree */
-let generateStableComponentId = (): Element.componentId => {
+/* Generate stable component ID based on position in tree and optional key */
+let generateStableComponentId = (key: option(string)): Element.componentId => {
   let position = componentCounter^;
   componentCounter := position + 1;
 
-  /* Look up or create ID for this position */
-  try(Hashtbl.find(componentIdRegistry, position)) {
+  let registryKey: componentPositionKey = (position, key);
+
+  /* Look up or create ID for this position/key combination */
+  try(Hashtbl.find(componentIdRegistry, registryKey)) {
   | Not_found =>
     let newId = Element.generateComponentId();
-    Hashtbl.add(componentIdRegistry, position, newId);
+    Hashtbl.add(componentIdRegistry, registryKey, newId);
     newId;
   };
+};
+
+/* Track a component ID as rendered during the current pass */
+let recordRenderedComponent = (componentId: Element.componentId): unit => {
+  renderedComponentIds := [componentId, ...renderedComponentIds^];
 };
 
 /* Render an element tree with selective component re-rendering.
@@ -68,12 +82,14 @@ let rec renderElement = (el: Element.t, rootCtx: Hooks.renderContext): string =>
     |> List.map(child => renderElement(child, rootCtx))
     |> String.concat("")
   | Element.Lazy(f) => renderElement(f(), rootCtx)
-  | Element.Component(_id, props, renderFn, cachedOutput, stableIdRef) =>
+  | Element.Component(_id, key, props, renderFn, cachedOutput, stableIdRef) =>
     /* Always generate stable ID based on current position in tree */
     /* This ensures components at the same position get the same ID across renders */
-    let stableId = generateStableComponentId();
+    let stableId = generateStableComponentId(key);
     /* Save for debugging/tracking, but position is the source of truth */
     stableIdRef := Some(stableId);
+    /* Record that this component was visited this render */
+    recordRenderedComponent(stableId);
 
     /* Check if this component needs re-rendering (props changed OR state changed) */
     Hooks.shouldRerenderComponent(stableId, props)
@@ -237,6 +253,8 @@ let start = (module C: HooksComponent) => {
   at_exit(() => {
     /* Run effect cleanups before exit */
     Hooks.runCleanups(ctx);
+    /* Also clean up any component contexts */
+    Hooks.cleanupUnmountedComponents([]);
     Terminal.restoreTerminal();
   });
 
@@ -260,6 +278,9 @@ let start = (module C: HooksComponent) => {
 
       /* Run effects after render */
       Hooks.runEffects(ctx);
+
+      /* Remove any component contexts that were not rendered this pass */
+      Hooks.cleanupUnmountedComponents(renderedComponentIds^);
 
       /* Collect key handlers from all component contexts into root context */
       Hooks.collectKeyHandlers(ctx);

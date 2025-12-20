@@ -28,6 +28,10 @@ let rec collect_type_vars typ acc =
       collect_type_vars t acc
   | _ -> acc
 
+(* Build an option type for a given core type *)
+let option_type ~loc t =
+  Ast_builder.Default.ptyp_constr ~loc { txt = Lident "option"; loc } [t]
+
 let component_mapper =
   object (self)
     inherit Ast_traverse.map as super
@@ -154,6 +158,12 @@ let component_mapper =
             (* Generate createElement: let createElement = () => Element.createComponent((), () => make()) *)
             let unit_pat = Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None in
             let unit_expr = Ast_builder.Default.pexp_construct ~loc { txt = Lident "()"; loc } None in
+            let key_pat =
+              Ast_builder.Default.ppat_var ~loc { txt = "key"; loc }
+            in
+            let key_expr =
+              Ast_builder.Default.pexp_ident ~loc { txt = Lident "key"; loc }
+            in
             
             let create_element_body =
               let make_call = 
@@ -167,12 +177,14 @@ let component_mapper =
               Ast_builder.Default.pexp_apply ~loc
                 (Ast_builder.Default.pexp_ident ~loc 
                    { txt = Ldot (Lident "Element", "createComponent"); loc })
-                [Nolabel, unit_expr;
+                [Optional "key", key_expr;
+                 Nolabel, unit_expr;
                  Nolabel, render_thunk]
             in
             
             let create_element_fun =
-              Ast_builder.Default.pexp_fun ~loc Nolabel None unit_pat create_element_body
+              Ast_builder.Default.pexp_fun ~loc (Optional "key") None key_pat
+                (Ast_builder.Default.pexp_fun ~loc Nolabel None unit_pat create_element_body)
             in
             
             (* Add [@warning "-32"] to suppress unused warning *)
@@ -212,10 +224,6 @@ let component_mapper =
             in
             
             (* Generate props record type with type parameters *)
-          let option_type t =
-            Ast_builder.Default.ptyp_constr ~loc { txt = Lident "option"; loc } [t]
-          in
-
           let props_fields =
             List.map
               (fun (label, typ, is_optional) ->
@@ -227,7 +235,9 @@ let component_mapper =
                         { txt = Lident "string"; loc }
                         []
                 in
-                let field_type = if is_optional then option_type base_type else base_type in
+                let field_type =
+                  if is_optional then option_type ~loc base_type else base_type
+                in
                 Ast_builder.Default.label_declaration ~loc
                   ~name:{ txt = label; loc }
                   ~mutable_:Immutable ~type_:field_type)
@@ -290,30 +300,40 @@ let component_mapper =
              *)
             
             (* Build labeled parameters for createElement *)
+          let string_type =
+            Ast_builder.Default.ptyp_constr ~loc { txt = Lident "string"; loc } []
+          in
+
+          let key_param =
+            Ast_builder.Default.pparam_val ~loc (Optional "key") None
+              (Ast_builder.Default.ppat_var ~loc { txt = "key"; loc })
+          in
+
           let create_element_params =
-            List.map (fun (label, typ, is_optional) ->
-              let base_type =
-                match typ with
-                | Some t -> t
-                | None ->
-                    Ast_builder.Default.ptyp_constr ~loc
-                      { txt = Lident "string"; loc }
-                      []
-              in
-              let param_type = if is_optional then option_type base_type else base_type in
-              let pattern =
-                Ast_builder.Default.ppat_constraint ~loc
-                  (Ast_builder.Default.ppat_var ~loc { txt = label; loc })
-                  param_type
-              in
-              Ast_builder.Default.pparam_val ~loc
-                (if is_optional then Optional label else Labelled label)
-                None
-                pattern
-            ) args
-            @
-            [Ast_builder.Default.pparam_val ~loc Nolabel None
-               (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)]
+            key_param
+            :: List.map (fun (label, typ, is_optional) ->
+                 let base_type =
+                   match typ with
+                   | Some t -> t
+                   | None -> string_type
+                 in
+                 let param_type =
+                   if is_optional then option_type ~loc base_type else base_type
+                 in
+                 let pattern =
+                   Ast_builder.Default.ppat_constraint ~loc
+                     (Ast_builder.Default.ppat_var ~loc { txt = label; loc })
+                     param_type
+                 in
+                 Ast_builder.Default.pparam_val ~loc
+                   (if is_optional then Optional label else Labelled label)
+                   None
+                   pattern
+               ) args
+            @ [
+                Ast_builder.Default.pparam_val ~loc Nolabel None
+                  (Ast_builder.Default.ppat_construct ~loc { txt = Lident "()"; loc } None)
+              ]
           in
             
             (* Build record expression for props: {arg1, arg2, ...} *)
@@ -338,11 +358,16 @@ let component_mapper =
             in
             
             (* Create Component element: Element.createComponent(props, renderFn) *)
+            let key_expr =
+              Ast_builder.Default.pexp_ident ~loc { txt = Lident "key"; loc }
+            in
+
             let create_element_body =
               Ast_builder.Default.pexp_apply ~loc
                 (Ast_builder.Default.pexp_ident ~loc 
                    { txt = Ldot (Lident "Element", "createComponent"); loc })
-                [Nolabel, props_record;
+                [Optional "key", key_expr;
+                 Nolabel, props_record;
                  Nolabel, render_thunk]
             in
             
