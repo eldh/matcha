@@ -22,38 +22,55 @@ module Profile = {
   };
 };
 
+/* Wrapper that simply renders Profile.
+ * Used to validate that a different render path (Wrapper -> Profile)
+ * does not reuse state from the direct Profile render.
+ */
+module Wrapper = {
+  [@component]
+  let make = (~name: string, ~start: int) => {
+    <Profile name start />;
+  };
+};
+
+/* Toggle mode used by the example */
+type mode =
+  | Direct
+  | Wrapped;
+
 [@component]
 let make = () => {
   let quit = Event.useQuit();
-  let (useFirst, setUseFirst) = Component.useState(true);
+  let (mode, setMode) = Component.useState(Direct);
 
   /* Global controls for toggling and quitting */
   Event.useKeyDown((key, _mods) =>
     switch (key) {
     | Key.Char('q') => quit(ClearScreen)
-    | Key.Char('t') => setUseFirst(!useFirst)
+    | Key.Char('t') =>
+      setMode(
+        switch (mode) {
+        | Direct => Wrapped
+        | Wrapped => Direct
+        },
+      )
     | _ => ()
     }
   );
 
-  /* Active profile changes tree ownership of the same component type */
-  let (name, start, keyValue) =
-    useFirst ? ("Alice", 1, "alice") : ("Bob", 10, "bob");
-
-  <Column>
-    <Bold> <Text> "Keyed component switch demo" </Text> </Bold>
-    <Text> "Press t to toggle between Alice and Bob. q to quit." </Text>
-    <Text> {"Active profile: " ++ name ++ " (key: " ++ keyValue ++ ")"} </Text>
-    <Dim>
-      <Text>
-        "Each profile uses the same component type. With correct key handling, switching shows its own initial count instead of reusing the previous profile's state."
-      </Text>
-    </Dim>
-    <Dim>
-      <Text> "Press +/- to adjust the active profile's counter." </Text>
-    </Dim>
-    <Profile key=keyValue name start />
-  </Column>;
+  /* Choose which render path to use (no keys passed) */
+  let (_name, renderedProfile) =
+    switch (mode) {
+    | Direct =>
+      let name = "Direct Profile";
+      let start = 1;
+      (name, <Profile name start />);
+    | Wrapped =>
+      let name = "Wrapped Profile";
+      let start = 10;
+      (name, <Wrapper name start />);
+    };
+  renderedProfile;
 };
 
 module App = {

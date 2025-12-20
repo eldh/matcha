@@ -27,11 +27,15 @@ let componentCounter = ref(0);
 /* Track which component IDs were rendered in the current pass */
 let renderedComponentIds: ref(list(Element.componentId)) = ref([]);
 
-/* Position + optional key uniquely identifies a component instance location */
-type componentPositionKey = (int, option(string));
+/* Registry entries keyed by render position */
+type componentEntry = {
+  key: option(string),
+  renderFnPtr: nativeint,
+  stableId: Element.componentId,
+};
 
-/* Registry mapping component instances (by position) to stable IDs */
-let componentIdRegistry: Hashtbl.t(componentPositionKey, Element.componentId) =
+/* Registry mapping render position to the last seen component identity */
+let componentIdRegistry: Hashtbl.t(int, componentEntry) =
   Hashtbl.create(100);
 
 /* Reset component tracking at start of render */
@@ -41,18 +45,28 @@ let resetComponentTracking = (): unit => {
   /* Don't clear registry - keep it persistent so component IDs are stable across renders */
 };
 
-/* Generate stable component ID based on position in tree and optional key */
-let generateStableComponentId = (key: option(string)): Element.componentId => {
+/* Generate stable component ID based on position in tree, optional key, and renderFn identity */
+let generateStableComponentId =
+    (key: option(string), renderFn: unit => Element.t): Element.componentId => {
   let position = componentCounter^;
   componentCounter := position + 1;
 
-  let registryKey: componentPositionKey = (position, key);
-
-  /* Look up or create ID for this position/key combination */
-  try(Hashtbl.find(componentIdRegistry, registryKey)) {
-  | Not_found =>
+  let renderFnPtr: nativeint = Obj.magic(renderFn);
+  /* Look up existing entry for this position */
+  switch (Hashtbl.find_opt(componentIdRegistry, position)) {
+  | Some({ key: prevKey, renderFnPtr: prevPtr, stableId })
+      when prevKey == key && prevPtr == renderFnPtr => stableId
+  | _ =>
     let newId = Element.generateComponentId();
-    Hashtbl.add(componentIdRegistry, registryKey, newId);
+    Hashtbl.replace(
+      componentIdRegistry,
+      position,
+      {
+        key,
+        renderFnPtr,
+        stableId: newId,
+      },
+    );
     newId;
   };
 };
@@ -85,7 +99,7 @@ let rec renderElement = (el: Element.t, rootCtx: Hooks.renderContext): string =>
   | Element.Component(_id, key, props, renderFn, cachedOutput, stableIdRef) =>
     /* Always generate stable ID based on current position in tree */
     /* This ensures components at the same position get the same ID across renders */
-    let stableId = generateStableComponentId(key);
+    let stableId = generateStableComponentId(key, renderFn);
     /* Save for debugging/tracking, but position is the source of truth */
     stableIdRef := Some(stableId);
     /* Record that this component was visited this render */
