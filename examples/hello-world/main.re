@@ -13,11 +13,11 @@ let make = () => {
   });
 
   <Column>
-    <Bold> <Text> "Hello, World!" </Text> </Bold>
+    <Text bold=true> "Hello, World!" </Text>
     <Text>
       "\nWelcome to Rere - a React-like terminal UI library for ReasonML."
     </Text>
-    <Dim> <Text> "\n\nPress Q to quit." </Text> </Dim>
+    <Text dim=true> "\n\nPress Q to quit." </Text>
   </Column>;
 };
 

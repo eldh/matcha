@@ -4,7 +4,7 @@ open Matcha;
 module Header = {
   [@component]
   let make = () => {
-    <Bold> <Text> "=== Nested Components Example ===" </Text> </Bold>;
+    <Text bold=true> "=== Nested Components Example ===" </Text>;
   };
 };
 
@@ -12,7 +12,7 @@ module Header = {
 module Footer = {
   [@component]
   let make = () => {
-    <Dim> <Text> "\n\nPress Q to quit." </Text> </Dim>;
+    <Text dim=true> "\n\nPress Q to quit." </Text>;
   };
 };
 

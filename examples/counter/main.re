@@ -33,18 +33,18 @@ let make = () => {
     );
 
   <Column>
-    <Bold> <Text> "Counter Example" </Text> </Bold>
+    <Text bold=true> "Counter Example" </Text>
     <Text> "\n" </Text>
     <Row>
       <Text> "Count: " </Text>
-      <Bold> <Text> countText </Text> </Bold>
+      <Text bold=true> countText </Text>
     </Row>
     <Text> "\n" </Text>
-    <Dim> <Text> {"[" ++ bar ++ "]"} </Text> </Dim>
+    <Text dim=true> {"[" ++ bar ++ "]"} </Text>
     <Text> "\n\n" </Text>
-    <Dim>
-      <Text> "↑/k: Increment  ↓/j: Decrement  r: Reset  q: Quit" </Text>
-    </Dim>
+    <Text dim=true>
+      "↑/k: Increment  ↓/j: Decrement  r: Reset  q: Quit"
+    </Text>
   </Column>;
 };
 

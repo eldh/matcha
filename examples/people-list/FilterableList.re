@@ -145,7 +145,7 @@ let make =
       } else {
         "No items";
       };
-    <Dim> <Text> noMatchText </Text> </Dim>;
+    <Text dim=true> noMatchText </Text>;
   } else {
     <Column> itemElements </Column>;
   };

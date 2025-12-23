@@ -15,9 +15,9 @@ module Profile = {
     );
 
     <Column>
-      <Bold> <Text> name </Text> </Bold>
+      <Text bold=true> name </Text>
       <Text> {"Count: " ++ string_of_int(count)} </Text>
-      <Dim> <Text> "Use +/- to change this profile's count." </Text> </Dim>
+      <Text dim=true> "Use +/- to change this profile's count." </Text>
     </Column>;
   };
 };

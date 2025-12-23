@@ -16,8 +16,36 @@
  *
  * JSX Components:
  * This module also exports JSX-compatible component modules:
- * Text, Bold, Dim, Italic, Underline, Inverted, Column, Row, Box, Fragment
+ * Text, Column, Row, Box, Fragment
+ *
+ * Text Styling:
+ * The Text component supports optional styling props:
+ * bold, dim, italic, underline, inverted (booleans)
+ * color, bgColor (color type with named colors + Rgb)
  */
+
+/* Color type for terminal colors.
+ * Named colors map to the 16 standard ANSI colors (0-15).
+ * Rgb maps to the 216-color cube (16-231).
+ */
+type color =
+  | Black
+  | Red
+  | Green
+  | Yellow
+  | Blue
+  | Magenta
+  | Cyan
+  | White
+  | BrightBlack
+  | BrightRed
+  | BrightGreen
+  | BrightYellow
+  | BrightBlue
+  | BrightMagenta
+  | BrightCyan
+  | BrightWhite
+  | Rgb(int, int, int); /* RGB values 0-5 each, maps to 216-color cube */
 
 /* Text styling options.
  * These map to ANSI escape codes for terminal formatting.
@@ -28,8 +56,8 @@ type style =
   | Italic /* Italic text (terminal support varies) */
   | Underline /* Underlined text */
   | Inverted /* Inverted foreground/background colors */
-  | FgColor(int) /* 256-color foreground (0-255) */
-  | BgColor(int); /* 256-color background (0-255) */
+  | FgColor(color) /* Foreground color */
+  | BgColor(color); /* Background color */
 
 /* Component instance identifier - defined here for Element, but also used by Hooks */
 type componentId = int;
@@ -129,6 +157,32 @@ let inverted = (el: t): t => Styled(Inverted, el);
  * ANSI Escape Code Utilities
  * ============================================================================ */
 
+/* Convert a color to its 256-color code. */
+let colorToCode = (c: color): int => {
+  switch (c) {
+  | Black => 0
+  | Red => 1
+  | Green => 2
+  | Yellow => 3
+  | Blue => 4
+  | Magenta => 5
+  | Cyan => 6
+  | White => 7
+  | BrightBlack => 8
+  | BrightRed => 9
+  | BrightGreen => 10
+  | BrightYellow => 11
+  | BrightBlue => 12
+  | BrightMagenta => 13
+  | BrightCyan => 14
+  | BrightWhite => 15
+  | Rgb(r, g, b) =>
+    /* Clamp values to 0-5 range and convert to 216-color cube index */
+    let clamp = v => max(0, min(5, v));
+    16 + 36 * clamp(r) + 6 * clamp(g) + clamp(b);
+  };
+};
+
 /* Convert a style to its ANSI escape code. */
 let styleToAnsi = (style: style): string => {
   switch (style) {
@@ -137,8 +191,8 @@ let styleToAnsi = (style: style): string => {
   | Italic => "\027[3m"
   | Underline => "\027[4m"
   | Inverted => "\027[7m"
-  | FgColor(c) => Printf.sprintf("\027[38;5;%dm", c)
-  | BgColor(c) => Printf.sprintf("\027[48;5;%dm", c)
+  | FgColor(c) => Printf.sprintf("\027[38;5;%dm", colorToCode(c))
+  | BgColor(c) => Printf.sprintf("\027[48;5;%dm", colorToCode(c))
   };
 };
 
@@ -359,29 +413,30 @@ let rec render = (el: t): string => {
  *   <Text> "plain" </Text>
  *   <Text bold=true> "bold text" </Text>
  *   <Text bold=true dim=true> "bold and dim" </Text>
- *   <Text fgColor=196> "red text" </Text>
+ *   <Text color=Red> "red text" </Text>
+ *   <Text color=Rgb(5, 0, 0) bgColor=White> "custom colors" </Text>
  */
 module Text = {
   type props = {
     children: string,
-    bold: bool,
-    dim: bool,
-    italic: bool,
-    underline: bool,
-    inverted: bool,
-    fgColor: option(int),
-    bgColor: option(int),
+    bold: option(bool),
+    dim: option(bool),
+    italic: option(bool),
+    underline: option(bool),
+    inverted: option(bool),
+    color: option(color),
+    bgColor: option(color),
   };
 
   /* Default props for simple <Text> usage */
   let defaultProps = {
     children: "",
-    bold: false,
-    dim: false,
-    italic: false,
-    underline: false,
-    inverted: false,
-    fgColor: None,
+    bold: None,
+    dim: None,
+    italic: None,
+    underline: None,
+    inverted: None,
+    color: None,
     bgColor: None,
   };
 
@@ -393,24 +448,29 @@ module Text = {
     | Some(c) => el := Styled(BgColor(c), el^)
     | None => ()
     };
-    switch (props.fgColor) {
+    switch (props.color) {
     | Some(c) => el := Styled(FgColor(c), el^)
     | None => ()
     };
-    if (props.inverted) {
-      el := Styled(Inverted, el^);
+    switch (props.inverted) {
+    | Some(true) => el := Styled(Inverted, el^)
+    | _ => ()
     };
-    if (props.underline) {
-      el := Styled(Underline, el^);
+    switch (props.underline) {
+    | Some(true) => el := Styled(Underline, el^)
+    | _ => ()
     };
-    if (props.italic) {
-      el := Styled(Italic, el^);
+    switch (props.italic) {
+    | Some(true) => el := Styled(Italic, el^)
+    | _ => ()
     };
-    if (props.dim) {
-      el := Styled(Dim, el^);
+    switch (props.dim) {
+    | Some(true) => el := Styled(Dim, el^)
+    | _ => ()
     };
-    if (props.bold) {
-      el := Styled(Bold, el^);
+    switch (props.bold) {
+    | Some(true) => el := Styled(Bold, el^)
+    | _ => ()
     };
 
     el^;
@@ -419,12 +479,12 @@ module Text = {
   /* createElement using labeled args with defaults for JSX compatibility */
   let createElement =
       (
-        ~bold=false,
-        ~dim=false,
-        ~italic=false,
-        ~underline=false,
-        ~inverted=false,
-        ~fgColor=?,
+        ~bold=?,
+        ~dim=?,
+        ~italic=?,
+        ~underline=?,
+        ~inverted=?,
+        ~color=?,
         ~bgColor=?,
         ~children,
         (),
@@ -438,40 +498,10 @@ module Text = {
           italic,
           underline,
           inverted,
-          fgColor,
+          color,
           bgColor,
         }),
     );
-};
-
-/* Bold component - renders children in bold */
-module Bold = {
-  let make = (~children, ()) => Styled(Bold, children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
-};
-
-/* Dim component - renders children dimmed */
-module Dim = {
-  let make = (~children, ()) => Styled(Dim, children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
-};
-
-/* Italic component - renders children italic */
-module Italic = {
-  let make = (~children, ()) => Styled(Italic, children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
-};
-
-/* Underline component - renders children underlined */
-module Underline = {
-  let make = (~children, ()) => Styled(Underline, children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
-};
-
-/* Inverted component - renders children with inverted colors */
-module Inverted = {
-  let make = (~children, ()) => Styled(Inverted, children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
 };
 
 /* Column component - stacks children vertically */

@@ -16,7 +16,7 @@ let fetchFavoriteColor = (name: string): string => {
 [@component]
 let make = (~people: array(Types.person)) => {
   /* Get terminal dimensions from context */
-  let {TerminalContext.width, height} = TerminalContext.use();
+  let { TerminalContext.width, height } = TerminalContext.use();
   let quit = Event.useQuit();
   let (activePerson, setActivePerson) = Component.useState(None);
   let (favoriteColor, setFavoriteColor) = Component.useState(None);
@@ -81,9 +81,7 @@ let make = (~people: array(Types.person)) => {
 
   let leftPane =
     <Column>
-      <Dim>
-        <Text> "People (↑/↓ navigate, Enter select, Q quit)\n" </Text>
-      </Dim>
+      <Text dim=true> "People (↑/↓ navigate, Enter select, Q quit)\n" </Text>
       <FilterableList
         items=people
         renderItem=renderPerson
@@ -95,7 +93,7 @@ let make = (~people: array(Types.person)) => {
 
   let colorDisplay =
     if (isLoading) {
-      <Dim> <Text> "Loading favorite color..." </Text> </Dim>;
+      <Text dim=true> "Loading favorite color..." </Text>;
     } else {
       switch (favoriteColor) {
       | None => Element.empty
@@ -105,22 +103,20 @@ let make = (~people: array(Types.person)) => {
 
   let rightPane =
     switch (activePerson) {
-    | None => <Dim> <Text> "No person selected" </Text> </Dim>
+    | None => <Text dim=true> "No person selected" </Text>
     | Some(person) =>
       <Column>
-        <Bold> <Text> {person.name} </Text> </Bold>
+        <Text bold=true> {person.name} </Text>
         <Text>
           {"\nAge: " ++ string_of_int(person.age) ++ " years old\n"}
         </Text>
         colorDisplay
-        <Dim>
-          <Text>
-            {"\n\nTerminal: "
-             ++ string_of_int(width)
-             ++ "x"
-             ++ string_of_int(height)}
-          </Text>
-        </Dim>
+        <Text dim=true>
+          {"\n\nTerminal: "
+           ++ string_of_int(width)
+           ++ "x"
+           ++ string_of_int(height)}
+        </Text>
       </Column>
     };
 
