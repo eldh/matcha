@@ -29,6 +29,7 @@ module Text = Element.Text; /* Text with optional styling props */
 module VStack = Element.VStack; /* Vertical flex stack */
 module HStack = Element.HStack; /* Horizontal flex stack */
 module Sized = Element.Sized; /* Size wrapper for stack children */
+module TextArea = Element.TextArea; /* Multi-line text editor */
 
 /* Size type for flex layout */
 type size = Element.size;

@@ -1,0 +1,8 @@
+(executable
+ (name main)
+ (public_name matcha-example-textarea-demo)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))
+
+
