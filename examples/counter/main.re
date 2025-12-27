@@ -32,20 +32,20 @@ let make = () => {
       [|count|],
     );
 
-  <Column>
+  <VStack>
     <Text bold=true> "Counter Example" </Text>
     <Text> "\n" </Text>
-    <Row>
+    <HStack>
       <Text> "Count: " </Text>
       <Text bold=true> countText </Text>
-    </Row>
+    </HStack>
     <Text> "\n" </Text>
     <Text dim=true> {"[" ++ bar ++ "]"} </Text>
     <Text> "\n\n" </Text>
     <Text dim=true>
       "↑/k: Increment  ↓/j: Decrement  r: Reset  q: Quit"
     </Text>
-  </Column>;
+  </VStack>;
 };
 
 module App = {

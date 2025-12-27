@@ -46,14 +46,14 @@ module WrappedApp = {
       }
     });
 
-    <Column>
+    <VStack>
       <Header />
       <Text> "\n" </Text>
       <Greeting name="World" />
       <Text> "\n" </Text>
       <Greeting name="ReasonML" />
       <Footer />
-    </Column>;
+    </VStack>;
   };
 };
 

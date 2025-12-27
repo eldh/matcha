@@ -125,7 +125,7 @@ let make =
         setFilter(String.sub(filter, 0, String.length(filter) - 1));
         setSelectedIndex(0);
       }
-    | (Key.Char(c), {Key.ctrl: false, alt: false, _}) =>
+    | (Key.Char(c), { Key.ctrl: false, alt: false, _ }) =>
       setFilter(filter ++ String.make(1, c));
       setSelectedIndex(0);
     | _ => ()
@@ -147,6 +147,6 @@ let make =
       };
     <Text dim=true> noMatchText </Text>;
   } else {
-    <Column> itemElements </Column>;
+    <VStack> itemElements </VStack>;
   };
 };

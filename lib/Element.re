@@ -7,16 +7,21 @@
  * Element Types:
  * - Text(string): Plain text content
  * - Styled(style, t): Apply ANSI styling to an element
- * - Column(list(t)): Stack children vertically (newline separated)
- * - Row(list(t)): Stack children horizontally (concatenated)
- * - Box(t, width, height, padding): Fixed-size container with padding
+ * - VStack(list(t), gap): Stack children vertically with flex layout
+ * - HStack(list(t), gap): Stack children horizontally with flex layout
+ * - Sized(t, size): Wrapper to specify size in parent Stack
  * - Lazy(unit => t): Deferred element (used by components)
  * - WithContext(setup, teardown, t): Context boundary for providers
  * - Empty: No content
  *
+ * Size Types (for Sized wrapper):
+ * - Flex(int): Flex units like CSS flex-grow
+ * - Percent(int): Percentage of parent container
+ * - Chars(int): Absolute character count
+ *
  * JSX Components:
  * This module also exports JSX-compatible component modules:
- * Text, Column, Row, Box, Fragment
+ * Text, VStack, HStack, Sized, Fragment
  *
  * Text Styling:
  * The Text component supports optional styling props:
@@ -59,6 +64,14 @@ type style =
   | FgColor(color) /* Foreground color */
   | BgColor(color); /* Background color */
 
+/* Size type for flex layout.
+ * Used to specify how children should be sized within a Stack.
+ */
+type size =
+  | Flex(int) /* Flex units - like CSS flex-grow */
+  | Percent(int) /* Percentage of parent container */
+  | Chars(int); /* Absolute character count */
+
 /* Component instance identifier - defined here for Element, but also used by Hooks */
 type componentId = int;
 
@@ -78,8 +91,9 @@ let generateComponentId = (): componentId => {
 type t =
   | Text(string) /* Plain text content */
   | Styled(style, t) /* Apply styling to child element */
-  | Column(list(t)) /* Vertical stack (newline-separated) */
-  | Row(list(t)) /* Horizontal stack (concatenated) */
+  | VStack(list(t), int) /* VStack(children, gap) - vertical flex layout */
+  | HStack(list(t), int) /* HStack(children, gap) - horizontal flex layout */
+  | Sized(t, size) /* Wrapper to specify size in parent Stack */
   | Empty /* Empty element (renders to "") */
   | Lazy(unit => t) /* Deferred element - thunk is called during render */
   | Component(
@@ -90,7 +104,6 @@ type t =
       ref(option(string)),
       ref(option(componentId)),
     ) /* Component instance: (id, key, props, renderFn, cachedOutput, stableIdRef) */
-  | Box(t, int, int, int) /* Box(content, width, height, padding) */
   | WithContext(unit => unit, unit => unit, t); /* Context boundary: (setup, teardown, children) */
 
 /* ============================================================================
@@ -103,11 +116,14 @@ let text = (s: string): t => Text(s);
 /* Create a styled element */
 let styled = (style: style, el: t): t => Styled(style, el);
 
-/* Create a vertical column of elements */
-let column = (children: list(t)): t => Column(children);
+/* Create a vertical stack of elements */
+let vstack = (~gap=0, children: list(t)): t => VStack(children, gap);
 
-/* Create a horizontal row of elements */
-let row = (children: list(t)): t => Row(children);
+/* Create a horizontal stack of elements */
+let hstack = (~gap=0, children: list(t)): t => HStack(children, gap);
+
+/* Wrap an element with a size hint for parent Stack */
+let sized = (size: size, el: t): t => Sized(el, size);
 
 /* Empty element constant */
 let empty = Empty;
@@ -321,18 +337,18 @@ module BoxChars = {
 
 /* Render an element tree to a string.
  *
- * This is the main rendering function that converts the element tree
- * into an ANSI-escaped string suitable for terminal output.
+ * NOTE: This is a simple render function without layout calculation.
+ * For proper flex layout, use Runtime.renderElement which handles
+ * size constraints and flex distribution.
  *
  * Rendering behavior by element type:
  * - Text(s) -> the string as-is
  * - Styled(style, child) -> ANSI code + render(child) + reset
- * - Column(children) -> children joined with newlines
- * - Row(children) -> children concatenated
+ * - VStack(children) -> children joined with newlines (ignores sizes)
+ * - HStack(children) -> children concatenated (ignores sizes)
  * - Lazy(f) -> render(f()) - forces the thunk
- * - Component(id, f, cache) -> checks if component needs re-render, uses cache if not
+ * - Component(id, f, cache) -> uses cached output or renders
  * - WithContext(setup, teardown, children) -> setup(); render(children); teardown()
- * - Box(...) -> formatted box with padding and size constraints
  * - Empty -> empty string
  */
 let rec render = (el: t): string => {
@@ -340,8 +356,13 @@ let rec render = (el: t): string => {
   | Empty => ""
   | Text(s) => s
   | Styled(style, child) => styleToAnsi(style) ++ render(child) ++ resetAnsi
-  | Column(children) => children |> List.map(render) |> String.concat("\n")
-  | Row(children) => children |> List.map(render) |> String.concat("")
+  | VStack(children, _gap) =>
+    children |> List.map(render) |> String.concat("\n")
+  | HStack(children, _gap) =>
+    children |> List.map(render) |> String.concat("")
+  | Sized(child, _size) =>
+    /* Size is handled by Runtime layout; here we just render the child */
+    render(child)
   | Lazy(f) => render(f())
   | Component(_id, _key, _props, renderFn, cachedOutput, _stableIdRef) =>
     /* Component rendering is handled by Runtime to avoid circular dependency.
@@ -358,45 +379,6 @@ let rec render = (el: t): string => {
     let result = render(children);
     teardown();
     result;
-  | Box(content, width, height, padding) =>
-    /* Calculate inner dimensions */
-    let innerWidth = width - padding * 2;
-    let innerHeight = height - padding * 2;
-
-    /* Render content and split into lines */
-    let contentLines = splitLines(render(content));
-
-    /* Pad lines list to fill height */
-    let padLines = (lines, targetHeight) => {
-      let len = List.length(lines);
-      if (len >= targetHeight) {
-        let rec take = (n, lst) =>
-          switch (n, lst) {
-          | (0, _) => []
-          | (_, []) => []
-          | (n, [h, ...t]) => [h, ...take(n - 1, t)]
-          };
-        take(targetHeight, lines);
-      } else {
-        lines @ List.init(targetHeight - len, _ => "");
-      };
-    };
-
-    let paddedLines = padLines(contentLines, innerHeight);
-
-    /* Add horizontal padding and constrain width */
-    let hPad = String.make(padding, ' ');
-    let formattedLines =
-      paddedLines
-      |> List.map(line =>
-           hPad ++ padToWidth(line, innerWidth) ++ resetAnsi ++ hPad
-         );
-
-    /* Add vertical padding */
-    let emptyLine = String.make(width, ' ');
-    let vPadLines = List.init(padding, _ => emptyLine);
-
-    String.concat("\n", vPadLines @ formattedLines @ vPadLines);
   };
 };
 
@@ -504,29 +486,59 @@ module Text = {
     );
 };
 
-/* Column component - stacks children vertically */
-module Column = {
-  let make = (~children, ()) => Column(children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+/* VStack component - stacks children vertically with flex layout.
+ *
+ * Usage:
+ *   <VStack> child1 child2 </VStack>
+ *   <VStack gap=1> child1 child2 </VStack>
+ *
+ * Children can be wrapped with <Sized> to specify their size:
+ *   <VStack>
+ *     <Sized size={Flex(2)}> child1 </Sized>
+ *     <Sized size={Percent(30)}> child2 </Sized>
+ *     child3  /* defaults to Flex(1) */
+ *   </VStack>
+ */
+module VStack = {
+  let make = (~children: list(t), ~gap=0, ()) => VStack(children, gap);
+  let createElement = (~children: list(t), ~gap=0, ()) =>
+    Lazy(() => make(~children, ~gap, ()));
 };
 
-/* Row component - stacks children horizontally */
-module Row = {
-  let make = (~children, ()) => Row(children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+/* HStack component - stacks children horizontally with flex layout.
+ *
+ * Usage:
+ *   <HStack> child1 child2 </HStack>
+ *   <HStack gap=2> child1 child2 </HStack>
+ *
+ * Children can be wrapped with <Sized> to specify their size:
+ *   <HStack>
+ *     <Sized size={Chars(20)}> sidebar </Sized>
+ *     <Sized size={Flex(1)}> content </Sized>
+ *   </HStack>
+ */
+module HStack = {
+  let make = (~children: list(t), ~gap=0, ()) => HStack(children, gap);
+  let createElement = (~children: list(t), ~gap=0, ()) =>
+    Lazy(() => make(~children, ~gap, ()));
 };
 
-/* Box component - fixed-size container with optional padding */
-module Box = {
-  let make = (~children, ~width, ~height, ~padding=0, ()) => {
-    Box(children, width, height, padding);
-  };
-  let createElement = (~children, ~width, ~height, ~padding=0, ()) =>
-    Lazy(() => make(~children, ~width, ~height, ~padding, ()));
+/* Sized component - wraps a child with a size hint for parent Stack.
+ *
+ * Usage:
+ *   <Sized size={Flex(2)}> child </Sized>
+ *   <Sized size={Percent(50)}> child </Sized>
+ *   <Sized size={Chars(30)}> child </Sized>
+ */
+module Sized = {
+  let make = (~children: t, ~size: size, ()) => Sized(children, size);
+  let createElement = (~children: t, ~size: size, ()) =>
+    Lazy(() => make(~children, ~size, ()));
 };
 
-/* Fragment component - groups children without adding structure (renders as Column) */
+/* Fragment component - groups children without adding structure */
 module Fragment = {
-  let make = (~children, ()) => Column(children);
-  let createElement = (~children, ()) => Lazy(() => make(~children, ()));
+  let make = (~children: list(t), ()) => VStack(children, 0);
+  let createElement = (~children: list(t), ()) =>
+    Lazy(() => make(~children, ()));
 };

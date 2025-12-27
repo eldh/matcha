@@ -14,11 +14,11 @@ module Profile = {
       }
     );
 
-    <Column>
+    <VStack>
       <Text bold=true> name </Text>
       <Text> {"Count: " ++ string_of_int(count)} </Text>
       <Text dim=true> "Use +/- to change this profile's count." </Text>
-    </Column>;
+    </VStack>;
   };
 };
 

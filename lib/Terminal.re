@@ -20,17 +20,26 @@ let originalTermio = ref(None);
 /* Clear the entire screen and move cursor to top-left.
  * Uses ANSI escape codes: ESC[2J (clear) + ESC[H (home).
  */
-let clearScreen = () => print_string("\027[2J\027[H");
+let clearScreen = () => {
+  print_string("\027[2J\027[H");
+  flush(stdout);
+};
 
 /* Hide the terminal cursor.
  * Call this during rendering to prevent cursor flicker.
  */
-let hideCursor = () => print_string("\027[?25l");
+let hideCursor = () => {
+  print_string("\027[?25l");
+  flush(stdout);
+};
 
 /* Show the terminal cursor.
  * Called automatically when restoring terminal state.
  */
-let showCursor = () => print_string("\027[?25h");
+let showCursor = () => {
+  print_string("\027[?25h");
+  flush(stdout);
+};
 
 /* Move the cursor to a specific position.
  * Row and col are 1-based (top-left is 1,1).

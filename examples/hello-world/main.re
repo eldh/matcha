@@ -12,13 +12,13 @@ let make = () => {
     }
   });
 
-  <Column>
+  <VStack>
     <Text bold=true> "Hello, World!" </Text>
     <Text>
       "\nWelcome to Rere - a React-like terminal UI library for ReasonML."
     </Text>
     <Text dim=true> "\n\nPress Q to quit." </Text>
-  </Column>;
+  </VStack>;
 };
 
 module App = {

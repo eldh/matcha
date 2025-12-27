@@ -4,16 +4,16 @@ module OptionalParams = {
   [@component]
   let make = (~first: string, ~second: string=?) => {
     let secondValue = Option.value(~default="no second", second);
-    <Column> <Text> first </Text> <Text> secondValue </Text> </Column>;
+    <VStack> <Text> first </Text> <Text> secondValue </Text> </VStack>;
   };
 };
 
 [@component]
 let make = () => {
-  <Column>
+  <VStack>
     <OptionalParams first="First" second="Second" />
     <OptionalParams first="First" />
-  </Column>;
+  </VStack>;
 };
 
 module App = {

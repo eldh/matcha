@@ -80,7 +80,7 @@ let make = (~people: array(Types.person)) => {
   let getFilterText = (person: Types.person) => person.name;
 
   let leftPane =
-    <Column>
+    <VStack>
       <Text dim=true> "People (↑/↓ navigate, Enter select, Q quit)\n" </Text>
       <FilterableList
         items=people
@@ -89,7 +89,7 @@ let make = (~people: array(Types.person)) => {
         onActive=handleActive
         getFilterText
       />
-    </Column>;
+    </VStack>;
 
   let colorDisplay =
     if (isLoading) {
@@ -105,7 +105,7 @@ let make = (~people: array(Types.person)) => {
     switch (activePerson) {
     | None => <Text dim=true> "No person selected" </Text>
     | Some(person) =>
-      <Column>
+      <VStack>
         <Text bold=true> {person.name} </Text>
         <Text>
           {"\nAge: " ++ string_of_int(person.age) ++ " years old\n"}
@@ -117,7 +117,7 @@ let make = (~people: array(Types.person)) => {
            ++ "x"
            ++ string_of_int(height)}
         </Text>
-      </Column>
+      </VStack>
     };
 
   <SplitView

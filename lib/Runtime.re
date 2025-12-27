@@ -76,154 +76,339 @@ let recordRenderedComponent = (componentId: Element.componentId): unit => {
   renderedComponentIds := [componentId, ...renderedComponentIds^];
 };
 
-/* Render an element tree with selective component re-rendering.
- * Components are only re-rendered if their context needs updates.
- */
-let rec renderElement = (el: Element.t, rootCtx: Hooks.renderContext): string => {
+/* ============================================================================
+ * Layout Constraints
+ * ============================================================================ */
+
+/* Layout constraints passed down during rendering */
+type constraints = {
+  availWidth: int,
+  availHeight: int,
+};
+
+/* Current layout constraints - accessible by components during render */
+let currentConstraints: ref(constraints) =
+  ref({
+    availWidth: 80,
+    availHeight: 24,
+  });
+
+/* Get the current layout constraints (available width/height for this component) */
+let getConstraints = (): constraints => currentConstraints^;
+
+/* Extract size hint from an element (looks for Sized wrapper) */
+let rec getSizeHint = (el: Element.t): option(Element.size) => {
   switch (el) {
-  | Element.Empty => ""
-  | Element.Text(s) => s
-  | Element.Styled(style, child) =>
-    Element.styleToAnsi(style)
-    ++ renderElement(child, rootCtx)
-    ++ Element.resetAnsi
-  | Element.Column(children) =>
-    children
-    |> List.map(child => renderElement(child, rootCtx))
-    |> String.concat("\n")
-  | Element.Row(children) =>
-    children
-    |> List.map(child => renderElement(child, rootCtx))
-    |> String.concat("")
-  | Element.Lazy(f) => renderElement(f(), rootCtx)
-  | Element.Component(_id, key, props, renderFn, cachedOutput, stableIdRef) =>
-    /* Always generate stable ID based on current position in tree */
-    /* This ensures components at the same position get the same ID across renders */
-    let stableId = generateStableComponentId(key, renderFn);
-    /* Save for debugging/tracking, but position is the source of truth */
-    stableIdRef := Some(stableId);
-    /* Record that this component was visited this render */
-    recordRenderedComponent(stableId);
+  | Element.Sized(_, size) => Some(size)
+  | Element.Lazy(f) => getSizeHint(f())
+  | _ => None
+  };
+};
 
-    /* Check if this component needs re-rendering (props changed OR state changed) */
-    Hooks.shouldRerenderComponent(stableId, props)
-      /* Component needs re-render - set up its context and evaluate */
-      ? {
-        let componentCtx =
-          switch (Hooks.getComponentContext(stableId)) {
-          | Some(ctx) => ctx
-          | None => Hooks.createComponentContext(stableId, rootCtx.quit)
-          };
+/* Unwrap Sized wrapper to get inner element */
+let rec unwrapSized = (el: Element.t): Element.t => {
+  switch (el) {
+  | Element.Sized(child, _) => unwrapSized(child)
+  | Element.Lazy(f) => unwrapSized(f())
+  | _ => el
+  };
+};
 
-        /* Update stored props */
-        Hooks.updateComponentProps(stableId, props);
+/* Calculate sizes for Stack children based on available space.
+ * Returns list of (element, allocatedSize) pairs.
+ *
+ * Algorithm:
+ * 1. Subtract gap space from available
+ * 2. Allocate absolute (Chars) sizes
+ * 3. Allocate percentage sizes from original available
+ * 4. Distribute remaining space to flex children by ratio
+ */
+let calculateChildSizes =
+    (children: list(Element.t), available: int, gap: int)
+    : list((Element.t, int)) => {
+  let numChildren = List.length(children);
+  if (numChildren == 0) {
+    [];
+  } else {
+    /* Subtract gap space */
+    let totalGap = gap * (numChildren - 1);
+    let availableForContent = max(0, available - totalGap);
 
-        /* Set this component's context as current */
-        let previousContext = Hooks.currentContext^;
-        let previousComponentId = Hooks.currentComponentId^;
-        Hooks.currentContext := Some(componentCtx);
-        Hooks.currentComponentId := Some(stableId);
-        Hooks.beginRender(componentCtx);
+    /* Extract size hints (default to Flex(1)) */
+    let childrenWithHints =
+      children
+      |> List.map(child => {
+           let hint =
+             switch (getSizeHint(child)) {
+             | Some(s) => s
+             | None => Element.Flex(1)
+             };
+           (child, hint);
+         });
 
-        /* Render the component */
-        let result = renderElement(renderFn(), rootCtx);
+    /* First pass: calculate absolute and percentage sizes, sum flex units */
+    let (absTotal, pctTotal, flexTotal) =
+      List.fold_left(
+        ((abs, pct, flex), (_, hint)) =>
+          switch (hint) {
+          | Element.Chars(n) => (abs + n, pct, flex)
+          | Element.Percent(p) => (
+              abs,
+              pct + availableForContent * p / 100,
+              flex,
+            )
+          | Element.Flex(f) => (abs, pct, flex + f)
+          },
+        (0, 0, 0),
+        childrenWithHints,
+      );
 
-        /* Run effects */
-        Hooks.runEffects(componentCtx);
+    /* Remaining space for flex children */
+    let remainingForFlex = max(0, availableForContent - absTotal - pctTotal);
 
-        /* Mark as rendered (clears needsRerender flag) */
-        Hooks.markComponentRendered(stableId);
+    /* Second pass: allocate actual sizes */
+    childrenWithHints
+    |> List.map(((child, hint)) => {
+         let size =
+           switch (hint) {
+           | Element.Chars(n) => n
+           | Element.Percent(p) => availableForContent * p / 100
+           | Element.Flex(f) =>
+             if (flexTotal > 0) {
+               remainingForFlex * f / flexTotal;
+             } else {
+               0;
+             }
+           };
+         (child, max(0, size));
+       });
+  };
+};
 
-        /* Restore previous context */
-        Hooks.currentContext := previousContext;
-        Hooks.currentComponentId := previousComponentId;
+/* ============================================================================
+ * Rendering with Layout
+ * ============================================================================ */
 
-        /* Cache the result */
-        cachedOutput := Some(result);
-        result;
-      }
-      /* Props haven't changed and state hasn't changed - use cached output */
-      /* Ensure stableIdRef is set even when using cache */
-      : {
-        stableIdRef := Some(stableId);
-        /* Note: componentCounter was already incremented when we generated stableId */
-        switch (cachedOutput^) {
-        | Some(cached) => cached
-        | None =>
-          /* No cache yet - render and cache (shouldn't happen, but handle it) */
+/* Render an element tree with layout constraints.
+ * Stack components distribute space among children based on size hints.
+ */
+let rec renderElement =
+        (
+          el: Element.t,
+          rootCtx: Hooks.renderContext,
+          constraints: constraints,
+        )
+        : string => {
+  /* Update current constraints so components can access them */
+  let prevConstraints = currentConstraints^;
+  currentConstraints := constraints;
+
+  let result =
+    switch (el) {
+    | Element.Empty => ""
+    | Element.Text(s) => s
+    | Element.Styled(style, child) =>
+      Element.styleToAnsi(style)
+      ++ renderElement(child, rootCtx, constraints)
+      ++ Element.resetAnsi
+
+    | Element.VStack(children, gap) =>
+      /* Calculate height for each child */
+      let childSizes =
+        calculateChildSizes(children, constraints.availHeight, gap);
+
+      /* Render each child with its allocated height */
+      let renderedChildren =
+        childSizes
+        |> List.map(((child, height)) => {
+             let childConstraints = {
+               availWidth: constraints.availWidth,
+               availHeight: height,
+             };
+             let unwrapped = unwrapSized(child);
+             let rendered =
+               renderElement(unwrapped, rootCtx, childConstraints);
+
+             /* Pad or truncate to exact height */
+             let lines = Element.splitLines(rendered);
+             let paddedLines =
+               if (List.length(lines) >= height) {
+                 let rec take = (n, lst) =>
+                   switch (n, lst) {
+                   | (0, _) => []
+                   | (_, []) => []
+                   | (n, [h, ...t]) => [h, ...take(n - 1, t)]
+                   };
+                 take(height, lines);
+               } else {
+                 lines @ List.init(height - List.length(lines), _ => "");
+               };
+             String.concat("\n", paddedLines);
+           });
+
+      /* Join with gap lines */
+      let gapStr = String.concat("\n", List.init(gap, _ => ""));
+      String.concat(
+        gapStr == "" ? "\n" : "\n" ++ gapStr ++ "\n",
+        renderedChildren,
+      );
+
+    | Element.HStack(children, gap) =>
+      /* Calculate width for each child */
+      let childSizes =
+        calculateChildSizes(children, constraints.availWidth, gap);
+
+      /* Render each child with its allocated width */
+      let renderedChildren =
+        childSizes
+        |> List.map(((child, width)) => {
+             let childConstraints = {
+               availWidth: width,
+               availHeight: constraints.availHeight,
+             };
+             let unwrapped = unwrapSized(child);
+             let rendered =
+               renderElement(unwrapped, rootCtx, childConstraints);
+
+             /* Split into lines and pad each line to width */
+             let lines = Element.splitLines(rendered);
+             lines |> List.map(line => Element.padToWidth(line, width));
+           });
+
+      /* Combine horizontally - zip lines together with gap */
+      let gapStr = String.make(gap, ' ');
+      let maxLines =
+        List.fold_left(
+          (m, lines) => max(m, List.length(lines)),
+          0,
+          renderedChildren,
+        );
+
+      /* Pad all children to same number of lines */
+      let paddedChildren =
+        childSizes
+        |> List.mapi((i, (_, width)) => {
+             let lines = List.nth(renderedChildren, i);
+             let emptyLine = String.make(width, ' ');
+             if (List.length(lines) >= maxLines) {
+               lines;
+             } else {
+               lines
+               @ List.init(maxLines - List.length(lines), _ => emptyLine);
+             };
+           });
+
+      /* Zip lines together */
+      let rec zipLines = (lineNum: int, acc: list(string)): list(string) =>
+        if (lineNum >= maxLines) {
+          List.rev(acc);
+        } else {
+          let line =
+            paddedChildren
+            |> List.map(lines => List.nth(lines, lineNum))
+            |> String.concat(gapStr);
+          zipLines(lineNum + 1, [line, ...acc]);
+        };
+
+      String.concat("\n", zipLines(0, []));
+
+    | Element.Sized(child, _size) =>
+      /* Size hint is used by parent Stack; here we just render the child */
+      renderElement(child, rootCtx, constraints)
+
+    | Element.Lazy(f) => renderElement(f(), rootCtx, constraints)
+
+    | Element.Component(_id, key, props, renderFn, cachedOutput, stableIdRef) =>
+      /* Always generate stable ID based on current position in tree */
+      /* This ensures components at the same position get the same ID across renders */
+      let stableId = generateStableComponentId(key, renderFn);
+      /* Save for debugging/tracking, but position is the source of truth */
+      stableIdRef := Some(stableId);
+      /* Record that this component was visited this render */
+      recordRenderedComponent(stableId);
+
+      /* Check if this component needs re-rendering (props changed OR state changed) */
+      Hooks.shouldRerenderComponent(stableId, props)
+        /* Component needs re-render - set up its context and evaluate */
+        ? {
           let componentCtx =
             switch (Hooks.getComponentContext(stableId)) {
             | Some(ctx) => ctx
             | None => Hooks.createComponentContext(stableId, rootCtx.quit)
             };
 
+          /* Update stored props */
           Hooks.updateComponentProps(stableId, props);
 
+          /* Set this component's context as current */
           let previousContext = Hooks.currentContext^;
           let previousComponentId = Hooks.currentComponentId^;
           Hooks.currentContext := Some(componentCtx);
           Hooks.currentComponentId := Some(stableId);
           Hooks.beginRender(componentCtx);
 
-          let result = renderElement(renderFn(), rootCtx);
+          /* Render the component */
+          let result = renderElement(renderFn(), rootCtx, constraints);
+
+          /* Run effects */
           Hooks.runEffects(componentCtx);
+
+          /* Mark as rendered (clears needsRerender flag) */
           Hooks.markComponentRendered(stableId);
 
+          /* Restore previous context */
           Hooks.currentContext := previousContext;
           Hooks.currentComponentId := previousComponentId;
 
+          /* Cache the result */
           cachedOutput := Some(result);
           result;
-        };
-      };
-  | Element.WithContext(setup, teardown, children) =>
-    setup();
-    let result = renderElement(children, rootCtx);
-    teardown();
-    result;
-  | Element.Box(content, width, height, padding) =>
-    /* Calculate inner dimensions */
-    let innerWidth = width - padding * 2;
-    let innerHeight = height - padding * 2;
+        }
+        /* Props haven't changed and state hasn't changed - use cached output */
+        /* Ensure stableIdRef is set even when using cache */
+        : {
+          stableIdRef := Some(stableId);
+          /* Note: componentCounter was already incremented when we generated stableId */
+          switch (cachedOutput^) {
+          | Some(cached) => cached
+          | None =>
+            /* No cache yet - render and cache (shouldn't happen, but handle it) */
+            let componentCtx =
+              switch (Hooks.getComponentContext(stableId)) {
+              | Some(ctx) => ctx
+              | None => Hooks.createComponentContext(stableId, rootCtx.quit)
+              };
 
-    /* Render content and split into lines */
-    let contentLines = Element.splitLines(renderElement(content, rootCtx));
+            Hooks.updateComponentProps(stableId, props);
 
-    /* Pad lines list to fill height */
-    let padLines = (lines, targetHeight) => {
-      let len = List.length(lines);
-      if (len >= targetHeight) {
-        let rec take = (n, lst) =>
-          switch (n, lst) {
-          | (0, _) => []
-          | (_, []) => []
-          | (n, [h, ...t]) => [h, ...take(n - 1, t)]
+            let previousContext = Hooks.currentContext^;
+            let previousComponentId = Hooks.currentComponentId^;
+            Hooks.currentContext := Some(componentCtx);
+            Hooks.currentComponentId := Some(stableId);
+            Hooks.beginRender(componentCtx);
+
+            let result = renderElement(renderFn(), rootCtx, constraints);
+            Hooks.runEffects(componentCtx);
+            Hooks.markComponentRendered(stableId);
+
+            Hooks.currentContext := previousContext;
+            Hooks.currentComponentId := previousComponentId;
+
+            cachedOutput := Some(result);
+            result;
           };
-        take(targetHeight, lines);
-      } else {
-        lines @ List.init(targetHeight - len, _ => "");
-      };
+        };
+
+    | Element.WithContext(setup, teardown, children) =>
+      setup();
+      let res = renderElement(children, rootCtx, constraints);
+      teardown();
+      res;
     };
 
-    let paddedLines = padLines(contentLines, innerHeight);
-
-    /* Add horizontal padding and constrain width */
-    let hPad = String.make(padding, ' ');
-    let formattedLines =
-      paddedLines
-      |> List.map(line =>
-           hPad
-           ++ Element.padToWidth(line, innerWidth)
-           ++ Element.resetAnsi
-           ++ hPad
-         );
-
-    /* Add vertical padding */
-    let emptyLine = String.make(width, ' ');
-    let vPadLines = List.init(padding, _ => emptyLine);
-
-    String.concat("\n", vPadLines @ formattedLines @ vPadLines);
-  };
+  /* Restore previous constraints */
+  currentConstraints := prevConstraints;
+  result;
 };
 
 /* Start the application with the given root component.
@@ -285,8 +470,15 @@ let start = (module C: HooksComponent) => {
       /* Reset component tracking for this render */
       resetComponentTracking();
 
+      /* Get terminal dimensions for layout constraints */
+      let (termWidth, termHeight) = Terminal.getSize();
+      let constraints = {
+        availWidth: termWidth,
+        availHeight: termHeight,
+      };
+
       let element = C.make();
-      let output = renderElement(element, ctx);
+      let output = renderElement(element, ctx, constraints);
       print_string(output);
       flush(stdout);
 
