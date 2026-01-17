@@ -7,17 +7,23 @@
  * Element Types:
  * - Text(string): Plain text content
  * - Styled(style, t): Apply ANSI styling to an element
- * - VStack(list(t), gap): Stack children vertically with flex layout
- * - HStack(list(t), gap): Stack children horizontally with flex layout
+ * - VStack(list(t), options): Stack children vertically with flex layout
+ * - HStack(list(t), options): Stack children horizontally with flex layout
  * - Sized(t, size): Wrapper to specify size in parent Stack
  * - Lazy(unit => t): Deferred element (used by components)
  * - WithContext(setup, teardown, t): Context boundary for providers
  * - Empty: No content
  *
  * Size Types (for Sized wrapper):
+ * - Auto: Size to content (default for children without Sized wrapper)
  * - Flex(int): Flex units like CSS flex-grow
  * - Percent(int): Percentage of parent container
  * - Chars(int): Absolute character count
+ *
+ * Alignment (for HStack/VStack):
+ * - align: Cross-axis alignment (AlignStart, AlignEnd, AlignCenter, AlignStretch)
+ * - justify: Main-axis distribution (JustifyStart, JustifyEnd, JustifyCenter,
+ *            JustifySpaceBetween, JustifySpaceAround, JustifySpaceEvenly)
  *
  * JSX Components:
  * This module also exports JSX-compatible component modules:
@@ -68,9 +74,39 @@ type style =
  * Used to specify how children should be sized within a Stack.
  */
 type size =
+  | Auto /* Size to content (default) */
   | Flex(int) /* Flex units - like CSS flex-grow */
   | Percent(int) /* Percentage of parent container */
   | Chars(int); /* Absolute character count */
+
+/* Alignment along the cross axis (perpendicular to main axis).
+ * For HStack: controls vertical alignment of items
+ * For VStack: controls horizontal alignment of items
+ */
+type align =
+  | AlignStart /* Align to start (top for HStack, left for VStack) */
+  | AlignEnd /* Align to end (bottom for HStack, right for VStack) */
+  | AlignCenter /* Center along cross axis */
+  | AlignStretch; /* Stretch to fill cross axis (default) */
+
+/* Justification along the main axis.
+ * For HStack: controls horizontal distribution of items
+ * For VStack: controls vertical distribution of items
+ */
+type justify =
+  | JustifyStart /* Pack items at start */
+  | JustifyEnd /* Pack items at end */
+  | JustifyCenter /* Pack items at center */
+  | JustifySpaceBetween /* Distribute with space between items */
+  | JustifySpaceAround /* Distribute with space around items */
+  | JustifySpaceEvenly; /* Distribute with equal space everywhere */
+
+/* Stack layout options */
+type stackOptions = {
+  gap: int,
+  align,
+  justify,
+};
 
 /* Component instance identifier - defined here for Element, but also used by Hooks */
 type componentId = int;
@@ -91,8 +127,8 @@ let generateComponentId = (): componentId => {
 type t =
   | Text(string) /* Plain text content */
   | Styled(style, t) /* Apply styling to child element */
-  | VStack(list(t), int) /* VStack(children, gap) - vertical flex layout */
-  | HStack(list(t), int) /* HStack(children, gap) - horizontal flex layout */
+  | VStack(list(t), stackOptions) /* VStack(children, options) - vertical flex layout */
+  | HStack(list(t), stackOptions) /* HStack(children, options) - horizontal flex layout */
   | Sized(t, size) /* Wrapper to specify size in parent Stack */
   | Empty /* Empty element (renders to "") */
   | Lazy(unit => t) /* Deferred element - thunk is called during render */
@@ -117,10 +153,26 @@ let text = (s: string): t => Text(s);
 let styled = (style: style, el: t): t => Styled(style, el);
 
 /* Create a vertical stack of elements */
-let vstack = (~gap=0, children: list(t)): t => VStack(children, gap);
+let vstack =
+    (
+      ~gap=0,
+      ~align=AlignStretch,
+      ~justify=JustifyStart,
+      children: list(t),
+    )
+    : t =>
+  VStack(children, {gap, align, justify});
 
 /* Create a horizontal stack of elements */
-let hstack = (~gap=0, children: list(t)): t => HStack(children, gap);
+let hstack =
+    (
+      ~gap=0,
+      ~align=AlignStretch,
+      ~justify=JustifyStart,
+      children: list(t),
+    )
+    : t =>
+  HStack(children, {gap, align, justify});
 
 /* Wrap an element with a size hint for parent Stack */
 let sized = (size: size, el: t): t => Sized(el, size);
@@ -356,9 +408,9 @@ let rec render = (el: t): string => {
   | Empty => ""
   | Text(s) => s
   | Styled(style, child) => styleToAnsi(style) ++ render(child) ++ resetAnsi
-  | VStack(children, _gap) =>
+  | VStack(children, _options) =>
     children |> List.map(render) |> String.concat("\n")
-  | HStack(children, _gap) =>
+  | HStack(children, _options) =>
     children |> List.map(render) |> String.concat("")
   | Sized(child, _size) =>
     /* Size is handled by Runtime layout; here we just render the child */
@@ -491,6 +543,15 @@ module Text = {
  * Usage:
  *   <VStack> child1 child2 </VStack>
  *   <VStack gap=1> child1 child2 </VStack>
+ *   <VStack align=AlignCenter justify=JustifySpaceBetween> ... </VStack>
+ *
+ * Props:
+ *   gap: int - Space between children (default: 0)
+ *   align: align - Cross-axis alignment (default: AlignStretch)
+ *     AlignStart, AlignEnd, AlignCenter, AlignStretch
+ *   justify: justify - Main-axis distribution (default: JustifyStart)
+ *     JustifyStart, JustifyEnd, JustifyCenter,
+ *     JustifySpaceBetween, JustifySpaceAround, JustifySpaceEvenly
  *
  * Children can be wrapped with <Sized> to specify their size:
  *   <VStack>
@@ -500,9 +561,24 @@ module Text = {
  *   </VStack>
  */
 module VStack = {
-  let make = (~children: list(t), ~gap=0, ()) => VStack(children, gap);
-  let createElement = (~children: list(t), ~gap=0, ()) =>
-    Lazy(() => make(~children, ~gap, ()));
+  let make =
+      (
+        ~children: list(t),
+        ~gap=0,
+        ~align=AlignStretch,
+        ~justify=JustifyStart,
+        (),
+      ) =>
+    VStack(children, {gap, align, justify});
+  let createElement =
+      (
+        ~children: list(t),
+        ~gap=0,
+        ~align=AlignStretch,
+        ~justify=JustifyStart,
+        (),
+      ) =>
+    Lazy(() => make(~children, ~gap, ~align, ~justify, ()));
 };
 
 /* HStack component - stacks children horizontally with flex layout.
@@ -510,6 +586,15 @@ module VStack = {
  * Usage:
  *   <HStack> child1 child2 </HStack>
  *   <HStack gap=2> child1 child2 </HStack>
+ *   <HStack align=AlignCenter justify=JustifySpaceBetween> ... </HStack>
+ *
+ * Props:
+ *   gap: int - Space between children (default: 0)
+ *   align: align - Cross-axis alignment (default: AlignStretch)
+ *     AlignStart, AlignEnd, AlignCenter, AlignStretch
+ *   justify: justify - Main-axis distribution (default: JustifyStart)
+ *     JustifyStart, JustifyEnd, JustifyCenter,
+ *     JustifySpaceBetween, JustifySpaceAround, JustifySpaceEvenly
  *
  * Children can be wrapped with <Sized> to specify their size:
  *   <HStack>
@@ -518,9 +603,24 @@ module VStack = {
  *   </HStack>
  */
 module HStack = {
-  let make = (~children: list(t), ~gap=0, ()) => HStack(children, gap);
-  let createElement = (~children: list(t), ~gap=0, ()) =>
-    Lazy(() => make(~children, ~gap, ()));
+  let make =
+      (
+        ~children: list(t),
+        ~gap=0,
+        ~align=AlignStretch,
+        ~justify=JustifyStart,
+        (),
+      ) =>
+    HStack(children, {gap, align, justify});
+  let createElement =
+      (
+        ~children: list(t),
+        ~gap=0,
+        ~align=AlignStretch,
+        ~justify=JustifyStart,
+        (),
+      ) =>
+    Lazy(() => make(~children, ~gap, ~align, ~justify, ()));
 };
 
 /* Sized component - wraps a child with a size hint for parent Stack.
@@ -538,7 +638,8 @@ module Sized = {
 
 /* Fragment component - groups children without adding structure */
 module Fragment = {
-  let make = (~children: list(t), ()) => VStack(children, 0);
+  let make = (~children: list(t), ()) =>
+    VStack(children, {gap: 0, align: AlignStretch, justify: JustifyStart});
   let createElement = (~children: list(t), ()) =>
     Lazy(() => make(~children, ()));
 };

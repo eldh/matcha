@@ -57,6 +57,11 @@ let componentContexts: Hashtbl.t(Element.componentId, renderContext) =
 let componentProps: Hashtbl.t(Element.componentId, Obj.t) =
   Hashtbl.create(100);
 
+/* Component constraints registry - maps component IDs to their last render constraints */
+/* Stores (availWidth, availHeight) tuple */
+let componentConstraints: Hashtbl.t(Element.componentId, (int, int)) =
+  Hashtbl.create(100);
+
 /* Generate a new unique component ID - delegates to Element to avoid circular dependency */
 let generateComponentId = (): Element.componentId => {
   Element.generateComponentId();
@@ -432,12 +437,29 @@ let updateComponentProps =
   Hashtbl.replace(componentProps, componentId, props);
 };
 
-/* Check if a component needs re-rendering (props changed OR state changed). (internal) */
+/* Check if constraints have changed by comparing with previous constraints. (internal) */
+let constraintsChanged =
+    (componentId: Element.componentId, newWidth: int, newHeight: int): bool =>
+  try({
+    let (prevWidth, prevHeight) = Hashtbl.find(componentConstraints, componentId);
+    prevWidth != newWidth || prevHeight != newHeight;
+  }) {
+  | Not_found => true /* No previous constraints - treat as changed */
+  };
+
+/* Update stored constraints for a component. (internal) */
+let updateComponentConstraints =
+    (componentId: Element.componentId, width: int, height: int): unit => {
+  Hashtbl.replace(componentConstraints, componentId, (width, height));
+};
+
+/* Check if a component needs re-rendering (props, state, OR constraints changed). (internal) */
 let shouldRerenderComponent =
-    (componentId: Element.componentId, newProps: Obj.t): bool => {
+    (componentId: Element.componentId, newProps: Obj.t, newWidth: int, newHeight: int): bool => {
   let stateChanged = componentNeedsRerender(componentId);
   let propsChanged = propsChanged(componentId, newProps);
-  stateChanged || propsChanged;
+  let constraintsChanged = constraintsChanged(componentId, newWidth, newHeight);
+  stateChanged || propsChanged || constraintsChanged;
 };
 
 /* Mark a component as rendered (clears needsRerender flag). (internal) */
@@ -513,7 +535,7 @@ let runCleanups = (ctx: renderContext): unit => {
 };
 
 /* Remove component contexts that were not rendered in the latest pass.
- * Runs cleanups for those contexts and drops their stored props to
+ * Runs cleanups for those contexts and drops their stored props/constraints to
  * prevent key handlers or effects from leaking after unmount.
  */
 let cleanupUnmountedComponents =
@@ -529,6 +551,7 @@ let cleanupUnmountedComponents =
         runCleanups(ctx);
         Hashtbl.remove(componentContexts, componentId);
         Hashtbl.remove(componentProps, componentId);
+        Hashtbl.remove(componentConstraints, componentId);
       },
     componentContexts,
   );

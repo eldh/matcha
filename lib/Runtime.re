@@ -167,17 +167,45 @@ let rec unwrapSized = (el: Element.t): Element.t => {
   };
 };
 
+/* Measure the content size of an element (simple heuristic).
+ * For width: returns the maximum line length
+ * For height: returns the number of lines
+ */
+let measureContentSize = (el: Element.t, measureWidth: bool): int => {
+  /* Render element to string without constraints to measure natural size */
+  let content = Element.render(el);
+  let lines = Element.splitLines(content);
+  if (measureWidth) {
+    /* Return max visible width of any line */
+    List.fold_left(
+      (maxW, line) => max(maxW, Element.visibleLength(line)),
+      0,
+      lines,
+    );
+  } else {
+    /* Return number of lines */
+    List.length(lines);
+  };
+};
+
 /* Calculate sizes for Stack children based on available space.
  * Returns list of (element, allocatedSize) pairs.
  *
  * Algorithm:
  * 1. Subtract gap space from available
- * 2. Allocate absolute (Chars) sizes
- * 3. Allocate percentage sizes from original available
+ * 2. Measure Auto-sized children content
+ * 3. Allocate absolute (Chars) and percentage sizes
  * 4. Distribute remaining space to flex children by ratio
+ *
+ * measureWidth: true for HStack (measuring widths), false for VStack (measuring heights)
  */
 let calculateChildSizes =
-    (children: list(Element.t), available: int, gap: int)
+    (
+      children: list(Element.t),
+      available: int,
+      gap: int,
+      measureWidth: bool,
+    )
     : list((Element.t, int)) => {
   let numChildren = List.length(children);
   if (numChildren == 0) {
@@ -187,43 +215,69 @@ let calculateChildSizes =
     let totalGap = gap * (numChildren - 1);
     let availableForContent = max(0, available - totalGap);
 
-    /* Extract size hints (default to Flex(1)) */
+    /* Extract size hints (default to Auto) */
     let childrenWithHints =
       children
       |> List.map(child => {
            let hint =
              switch (getSizeHint(child)) {
              | Some(s) => s
-             | None => Element.Flex(1)
+             | None => Element.Auto
              };
            (child, hint);
          });
 
-    /* First pass: calculate absolute and percentage sizes, sum flex units */
-    let (absTotal, pctTotal, flexTotal) =
+    /* First pass: measure Auto children and calculate fixed sizes */
+    let childrenWithMeasured =
+      childrenWithHints
+      |> List.map(((child, hint)) => {
+           let measured =
+             switch (hint) {
+             | Element.Auto =>
+               let unwrapped = unwrapSized(child);
+               Some(measureContentSize(unwrapped, measureWidth));
+             | _ => None
+             };
+           (child, hint, measured);
+         });
+
+    /* Calculate totals for each size type */
+    let (autoTotal, absTotal, pctTotal, flexTotal) =
       List.fold_left(
-        ((abs, pct, flex), (_, hint)) =>
+        ((auto, abs, pct, flex), (_, hint, measured)) =>
           switch (hint) {
-          | Element.Chars(n) => (abs + n, pct, flex)
+          | Element.Auto =>
+            switch (measured) {
+            | Some(size) => (auto + size, abs, pct, flex)
+            | None => (auto, abs, pct, flex)
+            }
+          | Element.Chars(n) => (auto, abs + n, pct, flex)
           | Element.Percent(p) => (
+              auto,
               abs,
               pct + availableForContent * p / 100,
               flex,
             )
-          | Element.Flex(f) => (abs, pct, flex + f)
+          | Element.Flex(f) => (auto, abs, pct, flex + f)
           },
-        (0, 0, 0),
-        childrenWithHints,
+        (0, 0, 0, 0),
+        childrenWithMeasured,
       );
 
     /* Remaining space for flex children */
-    let remainingForFlex = max(0, availableForContent - absTotal - pctTotal);
+    let remainingForFlex =
+      max(0, availableForContent - autoTotal - absTotal - pctTotal);
 
     /* Second pass: allocate actual sizes */
-    childrenWithHints
-    |> List.map(((child, hint)) => {
+    childrenWithMeasured
+    |> List.map(((child, hint, measured)) => {
          let size =
            switch (hint) {
+           | Element.Auto =>
+             switch (measured) {
+             | Some(s) => s
+             | None => 0
+             }
            | Element.Chars(n) => n
            | Element.Percent(p) => availableForContent * p / 100
            | Element.Flex(f) =>
@@ -265,10 +319,48 @@ let rec renderElement =
       ++ renderElement(child, rootCtx, constraints)
       ++ Element.resetAnsi
 
-    | Element.VStack(children, gap) =>
-      /* Calculate height for each child */
+    | Element.VStack(children, options) =>
+      let {gap, align, justify}: Element.stackOptions = options;
+
+      /* Calculate height for each child (measureWidth=false for VStack) */
       let childSizes =
-        calculateChildSizes(children, constraints.availHeight, gap);
+        calculateChildSizes(children, constraints.availHeight, gap, false);
+
+      /* Calculate total content height and remaining space for justify */
+      let totalContentHeight =
+        List.fold_left((acc, (_, h)) => acc + h, 0, childSizes);
+      let totalGapHeight = gap * max(0, List.length(children) - 1);
+      let usedHeight = totalContentHeight + totalGapHeight;
+      let remainingSpace = max(0, constraints.availHeight - usedHeight);
+
+      /* Calculate spacing based on justify */
+      let numChildren = List.length(children);
+      let (spaceBefore, spaceBetween, _spaceAfter) =
+        switch (justify) {
+        | Element.JustifyStart => (0, gap, 0)
+        | Element.JustifyEnd => (remainingSpace, gap, 0)
+        | Element.JustifyCenter => (remainingSpace / 2, gap, remainingSpace / 2)
+        | Element.JustifySpaceBetween =>
+          if (numChildren <= 1) {
+            (0, gap, 0);
+          } else {
+            (0, gap + remainingSpace / (numChildren - 1), 0);
+          }
+        | Element.JustifySpaceAround =>
+          if (numChildren == 0) {
+            (0, gap, 0);
+          } else {
+            let space = remainingSpace / (numChildren * 2);
+            (space, gap + space * 2, space);
+          }
+        | Element.JustifySpaceEvenly =>
+          if (numChildren == 0) {
+            (0, gap, 0);
+          } else {
+            let space = remainingSpace / (numChildren + 1);
+            (space, gap + space, space);
+          }
+        };
 
       /* Render each child with its allocated height */
       let renderedChildren =
@@ -282,72 +374,197 @@ let rec renderElement =
              let rendered =
                renderElement(unwrapped, rootCtx, childConstraints);
 
-             /* Pad or truncate to exact height */
+             /* Split into lines */
              let lines = Element.splitLines(rendered);
+
+             /* Apply horizontal alignment (cross-axis for VStack) */
+             let alignedLines =
+               switch (align) {
+               | Element.AlignStretch =>
+                 /* Pad each line to full width */
+                 lines |> List.map(line => Element.padToWidth(line, constraints.availWidth))
+               | Element.AlignStart =>
+                 /* Left-align (no change needed, just ensure no extra padding) */
+                 lines
+               | Element.AlignEnd =>
+                 /* Right-align each line */
+                 lines
+                 |> List.map(line => {
+                      let lineWidth = Element.visibleLength(line);
+                      let padding = max(0, constraints.availWidth - lineWidth);
+                      String.make(padding, ' ') ++ line;
+                    })
+               | Element.AlignCenter =>
+                 /* Center each line */
+                 lines
+                 |> List.map(line => {
+                      let lineWidth = Element.visibleLength(line);
+                      let padding = max(0, constraints.availWidth - lineWidth);
+                      let leftPad = padding / 2;
+                      String.make(leftPad, ' ') ++ line;
+                    })
+               };
+
+             /* Pad or truncate to exact height */
              let paddedLines =
-               if (List.length(lines) >= height) {
+               if (List.length(alignedLines) >= height) {
                  let rec take = (n, lst) =>
                    switch (n, lst) {
                    | (0, _) => []
                    | (_, []) => []
                    | (n, [h, ...t]) => [h, ...take(n - 1, t)]
                    };
-                 take(height, lines);
+                 take(height, alignedLines);
                } else {
-                 lines @ List.init(height - List.length(lines), _ => "");
+                 alignedLines @ List.init(height - List.length(alignedLines), _ => "");
                };
              String.concat("\n", paddedLines);
            });
 
-      /* Join with gap lines */
-      let gapStr = String.concat("\n", List.init(gap, _ => ""));
-      String.concat(
-        gapStr == "" ? "\n" : "\n" ++ gapStr ++ "\n",
-        renderedChildren,
-      );
+      /* Build output with justify spacing */
+      let beforeStr =
+        if (spaceBefore > 0) {
+          String.concat("\n", List.init(spaceBefore, _ => ""));
+        } else {
+          "";
+        };
+      let betweenStr =
+        if (spaceBetween > 0) {
+          String.concat("\n", List.init(spaceBetween, _ => ""));
+        } else {
+          "";
+        };
 
-    | Element.HStack(children, gap) =>
-      /* Calculate width for each child */
+      let content =
+        String.concat(
+          betweenStr == "" ? "\n" : "\n" ++ betweenStr ++ "\n",
+          renderedChildren,
+        );
+
+      (spaceBefore > 0 ? beforeStr ++ "\n" : "") ++ content;
+
+    | Element.HStack(children, options) =>
+      let {gap, align, justify}: Element.stackOptions = options;
+
+      /* Calculate width for each child (measureWidth=true for HStack) */
       let childSizes =
-        calculateChildSizes(children, constraints.availWidth, gap);
+        calculateChildSizes(children, constraints.availWidth, gap, true);
 
-      /* Render each child with its allocated width */
-      let renderedChildren =
+      /* Calculate total content width and remaining space for justify */
+      let totalContentWidth =
+        List.fold_left((acc, (_, w)) => acc + w, 0, childSizes);
+      let totalGapWidth = gap * max(0, List.length(children) - 1);
+      let usedWidth = totalContentWidth + totalGapWidth;
+      let remainingSpace = max(0, constraints.availWidth - usedWidth);
+
+      /* Calculate spacing based on justify */
+      let numChildren = List.length(children);
+      let (spaceBefore, spaceBetween, _spaceAfter) =
+        switch (justify) {
+        | Element.JustifyStart => (0, gap, 0)
+        | Element.JustifyEnd => (remainingSpace, gap, 0)
+        | Element.JustifyCenter => (remainingSpace / 2, gap, remainingSpace / 2)
+        | Element.JustifySpaceBetween =>
+          if (numChildren <= 1) {
+            (0, gap, 0);
+          } else {
+            (0, gap + remainingSpace / (numChildren - 1), 0);
+          }
+        | Element.JustifySpaceAround =>
+          if (numChildren == 0) {
+            (0, gap, 0);
+          } else {
+            let space = remainingSpace / (numChildren * 2);
+            (space, gap + space * 2, space);
+          }
+        | Element.JustifySpaceEvenly =>
+          if (numChildren == 0) {
+            (0, gap, 0);
+          } else {
+            let space = remainingSpace / (numChildren + 1);
+            (space, gap + space, space);
+          }
+        };
+
+      /* Save component counter before measurement pass */
+      let savedCounter = componentCounter^;
+
+      /* First pass: render children with minimal height constraint to measure natural size */
+      let measured =
         childSizes
         |> List.map(((child, width)) => {
              let childConstraints = {
                availWidth: width,
-               availHeight: constraints.availHeight,
+               availHeight: 0, /* Minimal height - let children use their natural size */
              };
              let unwrapped = unwrapSized(child);
              let rendered =
                renderElement(unwrapped, rootCtx, childConstraints);
+             let lines = Element.splitLines(rendered);
+             (child, width, List.length(lines));
+           });
 
-             /* Split into lines and pad each line to width */
+      /* Use the container height for cross-axis alignment */
+      let containerHeight = max(0, constraints.availHeight);
+
+      /* For AlignStretch, re-render with container height; otherwise use measured results */
+      /* Restore counter so later rendering uses consistent IDs */
+      componentCounter := savedCounter;
+      /* Re-render children with appropriate height constraint based on alignment */
+      let renderedChildren =
+        measured
+        |> List.map(((child, width, naturalHeight)) => {
+             let childHeight =
+               switch (align) {
+               | Element.AlignStretch => containerHeight
+               | _ => naturalHeight
+               };
+             let childConstraints = {
+               availWidth: width,
+               availHeight: childHeight,
+             };
+             let unwrapped = unwrapSized(child);
+             let rendered =
+               renderElement(unwrapped, rootCtx, childConstraints);
              let lines = Element.splitLines(rendered);
              lines |> List.map(line => Element.padToWidth(line, width));
            });
 
-      /* Combine horizontally - zip lines together with gap */
-      let gapStr = String.make(gap, ' ');
-      let maxLines =
-        List.fold_left(
-          (m, lines) => max(m, List.length(lines)),
-          0,
-          renderedChildren,
-        );
+      let maxLines = containerHeight;
 
-      /* Pad all children to same number of lines */
+      /* Combine horizontally - zip lines together with gap */
+      let gapStr = String.make(spaceBetween, ' ');
+
+      /* Pad all children to same number of lines with vertical alignment */
       let paddedChildren =
         childSizes
         |> List.mapi((i, (_, width)) => {
              let lines = List.nth(renderedChildren, i);
+             let numLines = List.length(lines);
              let emptyLine = String.make(width, ' ');
-             if (List.length(lines) >= maxLines) {
+
+             if (numLines >= maxLines) {
                lines;
              } else {
-               lines
-               @ List.init(maxLines - List.length(lines), _ => emptyLine);
+               let linesToAdd = maxLines - numLines;
+               switch (align) {
+               | Element.AlignStretch =>
+                 /* For stretch, pad at bottom (content should already fill height) */
+                 lines @ List.init(linesToAdd, _ => emptyLine)
+               | Element.AlignStart =>
+                 /* Add empty lines at bottom */
+                 lines @ List.init(linesToAdd, _ => emptyLine)
+               | Element.AlignEnd =>
+                 /* Add empty lines at top */
+                 List.init(linesToAdd, _ => emptyLine) @ lines
+               | Element.AlignCenter =>
+                 /* Add empty lines evenly top and bottom */
+                 let topPad = linesToAdd / 2;
+                 let bottomPad = linesToAdd - topPad;
+                 List.init(topPad, _ => emptyLine)
+                 @ lines
+                 @ List.init(bottomPad, _ => emptyLine);
+               };
              };
            });
 
@@ -363,7 +580,17 @@ let rec renderElement =
           zipLines(lineNum + 1, [line, ...acc]);
         };
 
-      String.concat("\n", zipLines(0, []));
+      /* Add horizontal padding for justify */
+      let beforePad = String.make(spaceBefore, ' ');
+      let lines = zipLines(0, []);
+      let paddedLines =
+        if (spaceBefore > 0) {
+          lines |> List.map(line => beforePad ++ line);
+        } else {
+          lines;
+        };
+
+      String.concat("\n", paddedLines);
 
     | Element.Sized(child, _size) =>
       /* Size hint is used by parent Stack; here we just render the child */
@@ -380,8 +607,13 @@ let rec renderElement =
       /* Record that this component was visited this render */
       recordRenderedComponent(stableId);
 
-      /* Check if this component needs re-rendering (props changed OR state changed) */
-      Hooks.shouldRerenderComponent(stableId, props)
+      /* Check if this component needs re-rendering (props, state, OR constraints changed) */
+      Hooks.shouldRerenderComponent(
+        stableId,
+        props,
+        constraints.availWidth,
+        constraints.availHeight,
+      )
         /* Component needs re-render - set up its context and evaluate */
         ? {
           let componentCtx =
@@ -390,8 +622,13 @@ let rec renderElement =
             | None => Hooks.createComponentContext(stableId, rootCtx.quit)
             };
 
-          /* Update stored props */
+          /* Update stored props and constraints */
           Hooks.updateComponentProps(stableId, props);
+          Hooks.updateComponentConstraints(
+            stableId,
+            constraints.availWidth,
+            constraints.availHeight,
+          );
 
           /* Set this component's context as current */
           let previousContext = Hooks.currentContext^;
@@ -417,7 +654,7 @@ let rec renderElement =
           cachedOutput := Some(result);
           result;
         }
-        /* Props haven't changed and state hasn't changed - use cached output */
+        /* Props, state, and constraints haven't changed - use cached output */
         /* Ensure stableIdRef is set even when using cache */
         : {
           stableIdRef := Some(stableId);
@@ -433,6 +670,11 @@ let rec renderElement =
               };
 
             Hooks.updateComponentProps(stableId, props);
+            Hooks.updateComponentConstraints(
+              stableId,
+              constraints.availWidth,
+              constraints.availHeight,
+            );
 
             let previousContext = Hooks.currentContext^;
             let previousComponentId = Hooks.currentComponentId^;
