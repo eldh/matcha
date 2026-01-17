@@ -21,6 +21,59 @@ module type HooksComponent = {
   let make: unit => Element.t;
 };
 
+/* ============================================================================
+ * Wake Pipe for Background Thread State Updates
+ * ============================================================================ */
+
+/* Self-pipe for waking the main loop when state changes from background threads */
+let wakePipe: ref(option((Unix.file_descr, Unix.file_descr))) = ref(None);
+
+/* Initialize the wake pipe */
+let initWakePipe = (): unit => {
+  let (readFd, writeFd) = Unix.pipe();
+  Unix.set_nonblock(readFd);
+  Unix.set_nonblock(writeFd);
+  wakePipe := Some((readFd, writeFd));
+};
+
+/* Drain any pending bytes from the wake pipe */
+let drainWakePipe = (): unit => {
+  switch (wakePipe^) {
+  | Some((readFd, _)) =>
+    let buf = Bytes.create(64);
+    let rec drain = () => {
+      try({
+        let _ = Unix.read(readFd, buf, 0, 64);
+        drain(); /* Keep draining until empty */
+      }) {
+      | Unix.Unix_error(Unix.EAGAIN, _, _) => () /* No more data */
+      | Unix.Unix_error(Unix.EWOULDBLOCK, _, _) => () /* No more data */
+      | _ => ()
+      };
+    };
+    drain();
+  | None => ()
+  };
+};
+
+/* Wake the main loop by writing to the pipe */
+let wakeMainLoop = (): unit => {
+  switch (wakePipe^) {
+  | Some((_, writeFd)) =>
+    try(ignore(Unix.write(writeFd, Bytes.of_string("w"), 0, 1))) {
+    | _ => () /* Ignore errors (pipe full, etc.) */
+    }
+  | None => ()
+  };
+};
+
+/* Register the wake function with Hooks */
+let () = Hooks.setWakeMainLoop(wakeMainLoop);
+
+/* ============================================================================
+ * Component ID Management
+ * ============================================================================ */
+
 /* Component instance counter for stable IDs based on tree position */
 let componentCounter = ref(0);
 
@@ -446,6 +499,9 @@ let start = (module C: HooksComponent) => {
 
   Sys.set_signal(Terminal.sigwinch, Sys.Signal_handle(handleResize));
 
+  /* Initialize wake pipe for background thread state updates */
+  initWakePipe();
+
   /* Set up terminal */
   Terminal.setRawMode();
   Terminal.hideCursor();
@@ -494,11 +550,35 @@ let start = (module C: HooksComponent) => {
       Hooks.currentContext := None;
     };
 
-    /* Handle input - dispatch to all registered handlers */
-    switch (Terminal.readKey()) {
-    | Some((key, modifiers)) =>
-      List.iter(handler => handler(key, modifiers), ctx.keyHandlers)
-    | None => ()
+    /* Wait for input on stdin or wake pipe using select */
+    let readFds =
+      switch (wakePipe^) {
+      | Some((readFd, _)) => [Unix.stdin, readFd]
+      | None => [Unix.stdin]
+      };
+
+    let (ready, _, _) =
+      try(Unix.select(readFds, [], [], 0.1)) {
+      | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], []) /* Interrupted by signal */
+      };
+
+    /* Drain wake pipe if it was signaled */
+    let hasWakePipe =
+      switch (wakePipe^) {
+      | Some((readFd, _)) => List.mem(readFd, ready)
+      | None => false
+      };
+    if (hasWakePipe) {
+      drainWakePipe();
+    };
+
+    /* Handle stdin input if ready */
+    if (List.mem(Unix.stdin, ready)) {
+      switch (Terminal.readKey()) {
+      | Some((key, modifiers)) =>
+        List.iter(handler => handler(key, modifiers), ctx.keyHandlers)
+      | None => ()
+      };
     };
   };
 };

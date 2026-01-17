@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name matcha-example-async-fetch)
+ (libraries matcha threads.posix)
+ (preprocess
+  (pps ppx_component)))

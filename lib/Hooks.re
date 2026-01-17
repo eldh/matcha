@@ -71,6 +71,22 @@ let currentComponentId: ref(option(Element.componentId)) = ref(None);
 /* Global root context reference (set when Runtime.start is called) */
 let rootContext: ref(option(renderContext)) = ref(None);
 
+/* Wake main loop function - set by Runtime to interrupt blocking I/O */
+let wakeMainLoopRef: ref(option(unit => unit)) = ref(None);
+
+/* Called by Runtime to register the wake function */
+let setWakeMainLoop = (f: unit => unit): unit => {
+  wakeMainLoopRef := Some(f);
+};
+
+/* Wake the main loop - call after state changes from background threads */
+let wakeMainLoop = (): unit => {
+  switch (wakeMainLoopRef^) {
+  | Some(f) => f()
+  | None => ()
+  };
+};
+
 /* Get the current render context (internal - fails if not in render) */
 let getContext = () => {
   switch (currentContext^) {
@@ -119,6 +135,8 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
         /* Root context - mark for full re-render */
         ctx.needsRerender = true
       };
+      /* Wake main loop to handle state change from background thread */
+      wakeMainLoop();
     };
     (initial, setState);
   } else {
@@ -141,6 +159,8 @@ let useState = (initial: 'a): ('a, 'a => unit) => {
           /* Root context - mark for full re-render */
           ctx.needsRerender = true
         };
+        /* Wake main loop to handle state change from background thread */
+        wakeMainLoop();
       };
       (Obj.magic(stateRef^), setState);
     | EffectHook(_, _) => failwith("Hook type mismatch: expected StateHook")
