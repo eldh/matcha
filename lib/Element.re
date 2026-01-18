@@ -366,6 +366,36 @@ let repeatString = (s: string, n: int): string => {
   Buffer.contents(buf);
 };
 
+/* Strip all ANSI escape codes from a string.
+ * Useful for testing output without dealing with formatting codes.
+ */
+let stripAnsi = (s: string): string => {
+  let len = String.length(s);
+  let buf = Buffer.create(len);
+  let rec loop = (i, inEscape) =>
+    if (i >= len) {
+      ();
+    } else {
+      let c = Char.code(s.[i]);
+      if (inEscape) {
+        /* End of escape sequence when we hit a letter (A-Z or a-z) */
+        if (c >= 65 && c <= 90 || c >= 97 && c <= 122) {
+          loop(i + 1, false);
+        } else {
+          loop(i + 1, true);
+        };
+      } else if (c == 27) {
+        /* ESC (0x1B) - start of escape sequence */
+        loop(i + 1, true);
+      } else {
+        Buffer.add_char(buf, s.[i]);
+        loop(i + 1, false);
+      };
+    };
+  loop(0, false);
+  Buffer.contents(buf);
+};
+
 /* Box drawing characters for terminal UIs.
  * These are UTF-8 characters that render as solid lines.
  */

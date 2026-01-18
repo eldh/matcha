@@ -1,0 +1,12 @@
+(library
+ (name test)
+ (modules Test))
+
+; Run tests with: dune test
+(test
+ (name run_tests)
+ (modules run_tests headless_tests element_tests)
+ (libraries matcha test)
+ (deps (universe))  ; Always re-run, don't cache
+ (preprocess
+  (pps ppx_component)))

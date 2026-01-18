@@ -83,3 +83,23 @@ let visibleLength = Element.visibleLength;
 
 /* Split string into lines */
 let splitLines = Element.splitLines;
+
+/* Strip ANSI escape codes from a string (useful for testing) */
+let stripAnsi = Element.stripAnsi;
+
+/* ============================================================================
+ * Headless Mode
+ * ============================================================================ */
+
+/* Headless mode types */
+type headlessConfig = Runtime.headlessConfig;
+type headlessHandle = Runtime.headlessHandle;
+
+/* Start app in headless mode for testing/agent interaction */
+let startHeadless = Runtime.startHeadless;
+
+/* Default headless configuration (80x24) */
+let defaultHeadlessConfig = Runtime.defaultHeadlessConfig;
+
+/* Check if MATCHA_HEADLESS=1 environment variable is set */
+let isHeadless = Runtime.isHeadless;

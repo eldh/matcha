@@ -149,6 +149,49 @@ let currentConstraints: ref(constraints) =
 /* Get the current layout constraints (available width/height for this component) */
 let getConstraints = (): constraints => currentConstraints^;
 
+/* ============================================================================
+ * Headless Mode Support
+ * ============================================================================ */
+
+/* Configuration for headless mode */
+type headlessConfig = {
+  width: int,
+  height: int,
+};
+
+/* Default headless configuration */
+let defaultHeadlessConfig = {width: 80, height: 24};
+
+/* Handle for controlling a headless app */
+type headlessHandle = {
+  sendKey: (Key.t, Key.modifiers) => unit,
+  getOutput: bool => string,        /* stripAnsi parameter */
+  getLines: bool => array(string),  /* stripAnsi parameter */
+  isRunning: unit => bool,
+  render: unit => string,
+  resize: (int, int) => unit,
+  getSize: unit => (int, int),
+  quit: unit => unit,
+};
+
+/* Helper to read an int from an environment variable with a default */
+let getEnvInt = (name: string, default: int): int =>
+  try(int_of_string(Sys.getenv(name))) {
+  | _ => default
+  };
+
+/* Check if headless mode is enabled via environment variable */
+let isHeadless = (): bool =>
+  try(Sys.getenv("MATCHA_HEADLESS") == "1") {
+  | Not_found => false
+  };
+
+/* Get headless config from environment variables */
+let getHeadlessConfigFromEnv = (): headlessConfig => {
+  width: getEnvInt("MATCHA_WIDTH", 80),
+  height: getEnvInt("MATCHA_HEIGHT", 24),
+};
+
 /* Extract size hint from an element (looks for Sized wrapper) */
 let rec getSizeHint = (el: Element.t): option(Element.size) => {
   switch (el) {
@@ -706,6 +749,77 @@ let rec renderElement =
   result;
 };
 
+/* Internal: Run the headless main loop (when MATCHA_HEADLESS=1) */
+let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
+  let running = ref(true);
+
+  let quit = (behavior: Hooks.quitBehavior) => {
+    running := false;
+    ignore(behavior); /* No screen to clear in headless mode */
+  };
+
+  /* Create hooks context for this component */
+  let ctx = Hooks.createContext(quit);
+  Hooks.rootContext := Some(ctx);
+
+  /* No signal handler for resize in headless - size is fixed */
+  /* No wake pipe needed - we process input synchronously */
+  /* No terminal setup needed */
+
+  /* Register cleanup for exit */
+  at_exit(() => {
+    Hooks.runCleanups(ctx);
+    Hooks.cleanupUnmountedComponents([]);
+  });
+
+  /* Set stdin to non-blocking for headless input */
+  Unix.set_nonblock(Unix.stdin);
+
+  /* Main loop */
+  while (running^) {
+    if (ctx.needsRerender) {
+      ctx.needsRerender = false;
+      /* No clearScreen in headless - just output the frame */
+
+      Hooks.currentContext := Some(ctx);
+      Hooks.beginRender(ctx);
+      resetComponentTracking();
+
+      let constraints = {
+        availWidth: config.width,
+        availHeight: config.height,
+      };
+
+      let element = C.make();
+      let output = renderElement(element, ctx, constraints);
+      print_string(output);
+      print_newline(); /* Add newline between frames for readability */
+      flush(stdout);
+
+      Hooks.runEffects(ctx);
+      Hooks.cleanupUnmountedComponents(renderedComponentIds^);
+      Hooks.collectKeyHandlers(ctx);
+      Hooks.currentContext := None;
+    };
+
+    /* Try to read input from stdin (non-blocking) */
+    let (ready, _, _) =
+      try(Unix.select([Unix.stdin], [], [], 0.1)) {
+      | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], [])
+      };
+
+    if (List.mem(Unix.stdin, ready)) {
+      switch (Terminal.readKey()) {
+      | Some((key, modifiers)) =>
+        List.iter(handler => handler(key, modifiers), ctx.keyHandlers)
+      | None =>
+        /* EOF on stdin - exit gracefully */
+        running := false
+      };
+    };
+  };
+};
+
 /* Start the application with the given root component.
  *
  * This function:
@@ -716,111 +830,233 @@ let rec renderElement =
  * 5. Restores terminal on exit (via at_exit handler)
  *
  * The loop continues until quit is called (via useQuit hook).
+ *
+ * If MATCHA_HEADLESS=1 environment variable is set, runs in headless mode:
+ * - No terminal setup (works without TTY)
+ * - Uses MATCHA_WIDTH and MATCHA_HEIGHT for dimensions (default 80x24)
+ * - Reads key input from stdin, outputs frames to stdout
  */
 let start = (module C: HooksComponent) => {
+  /* Check for headless mode */
+  if (isHeadless()) {
+    startHeadlessLoop((module C), getHeadlessConfigFromEnv());
+  } else {
+    let running = ref(true);
+
+    let quit = (behavior: Hooks.quitBehavior) => {
+      running := false;
+      switch (behavior) {
+      | ClearScreen => Terminal.clearScreen()
+      | PreserveScreen => ()
+      };
+    };
+
+    /* Create hooks context for this component */
+    let ctx = Hooks.createContext(quit);
+
+    /* Set root context reference so components can trigger re-renders */
+    Hooks.rootContext := Some(ctx);
+
+    /* Signal handler for resize - triggers re-render */
+    let handleResize = _ => {
+      ctx.needsRerender = true;
+    };
+
+    Sys.set_signal(Terminal.sigwinch, Sys.Signal_handle(handleResize));
+
+    /* Initialize wake pipe for background thread state updates */
+    initWakePipe();
+
+    /* Set up terminal */
+    Terminal.setRawMode();
+    Terminal.hideCursor();
+    at_exit(() => {
+      /* Run effect cleanups before exit */
+      Hooks.runCleanups(ctx);
+      /* Also clean up any component contexts */
+      Hooks.cleanupUnmountedComponents([]);
+      Terminal.restoreTerminal();
+    });
+
+    /* Main loop */
+    while (running^) {
+      if (ctx.needsRerender) {
+        ctx.needsRerender = false;
+        Terminal.clearScreen();
+
+        /* Set current context and render */
+        Hooks.currentContext := Some(ctx);
+        Hooks.beginRender(ctx);
+
+        /* Reset component tracking for this render */
+        resetComponentTracking();
+
+        /* Get terminal dimensions for layout constraints */
+        let (termWidth, termHeight) = Terminal.getSize();
+        let constraints = {
+          availWidth: termWidth,
+          availHeight: termHeight,
+        };
+
+        let element = C.make();
+        let output = renderElement(element, ctx, constraints);
+        print_string(output);
+        flush(stdout);
+
+        /* Run effects after render */
+        Hooks.runEffects(ctx);
+
+        /* Remove any component contexts that were not rendered this pass */
+        Hooks.cleanupUnmountedComponents(renderedComponentIds^);
+
+        /* Collect key handlers from all component contexts into root context */
+        Hooks.collectKeyHandlers(ctx);
+
+        Hooks.currentContext := None;
+      };
+
+      /* Wait for input on stdin or wake pipe using select */
+      let readFds =
+        switch (wakePipe^) {
+        | Some((readFd, _)) => [Unix.stdin, readFd]
+        | None => [Unix.stdin]
+        };
+
+      let (ready, _, _) =
+        try(Unix.select(readFds, [], [], 0.1)) {
+        | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], []) /* Interrupted by signal */
+        };
+
+      /* Drain wake pipe if it was signaled */
+      let hasWakePipe =
+        switch (wakePipe^) {
+        | Some((readFd, _)) => List.mem(readFd, ready)
+        | None => false
+        };
+      if (hasWakePipe) {
+        drainWakePipe();
+      };
+
+      /* Handle stdin input if ready */
+      if (List.mem(Unix.stdin, ready)) {
+        switch (Terminal.readKey()) {
+        | Some((key, modifiers)) =>
+          List.iter(handler => handler(key, modifiers), ctx.keyHandlers)
+        | None => ()
+        };
+      };
+    };
+  };
+};
+
+/* Start the application in headless mode for testing/agent interaction.
+ *
+ * Unlike start(), this function:
+ * - Does NOT set raw terminal mode
+ * - Does NOT read from stdin
+ * - Does NOT print to stdout
+ * - Returns immediately with a handle for programmatic control
+ *
+ * Example:
+ *   let handle = Runtime.startHeadless((module MyApp));
+ *   handle.sendKey(Key.Arrow_up, Key.noModifiers);
+ *   let output = handle.getOutput();
+ *   handle.quit();
+ */
+let startHeadless =
+    (~config=defaultHeadlessConfig, module C: HooksComponent): headlessHandle => {
   let running = ref(true);
+  let lastOutput = ref("");
+  let currentWidth = ref(config.width);
+  let currentHeight = ref(config.height);
 
   let quit = (behavior: Hooks.quitBehavior) => {
     running := false;
-    switch (behavior) {
-    | ClearScreen => Terminal.clearScreen()
-    | PreserveScreen => ()
-    };
+    ignore(behavior); /* No screen to clear in headless mode */
   };
 
-  /* Create hooks context for this component */
+  /* Create hooks context */
   let ctx = Hooks.createContext(quit);
-
-  /* Set root context reference so components can trigger re-renders */
   Hooks.rootContext := Some(ctx);
 
-  /* Signal handler for resize - triggers re-render */
-  let handleResize = _ => {
-    ctx.needsRerender = true;
+  /* No SIGWINCH handler - size is controlled programmatically */
+  /* No wake pipe - we control when to process events */
+  /* No terminal setup */
+
+  /* Render function */
+  let doRender = (): string => {
+    ctx.needsRerender = false;
+
+    Hooks.currentContext := Some(ctx);
+    Hooks.beginRender(ctx);
+    resetComponentTracking();
+
+    let constraints = {
+      availWidth: currentWidth^,
+      availHeight: currentHeight^,
+    };
+
+    let element = C.make();
+    let output = renderElement(element, ctx, constraints);
+
+    Hooks.runEffects(ctx);
+    Hooks.cleanupUnmountedComponents(renderedComponentIds^);
+    Hooks.collectKeyHandlers(ctx);
+    Hooks.currentContext := None;
+
+    lastOutput := output;
+    output;
   };
 
-  Sys.set_signal(Terminal.sigwinch, Sys.Signal_handle(handleResize));
+  /* Initial render */
+  let _ = doRender();
 
-  /* Initialize wake pipe for background thread state updates */
-  initWakePipe();
+  /* Build and return the handle */
+  {
+    sendKey: (key, modifiers) =>
+      if (running^) {
+        List.iter(handler => handler(key, modifiers), ctx.keyHandlers);
+        /* Re-render if state changed */
+        if (ctx.needsRerender) {
+          let _ = doRender();
+          ();
+        };
+      },
 
-  /* Set up terminal */
-  Terminal.setRawMode();
-  Terminal.hideCursor();
-  at_exit(() => {
-    /* Run effect cleanups before exit */
-    Hooks.runCleanups(ctx);
-    /* Also clean up any component contexts */
-    Hooks.cleanupUnmountedComponents([]);
-    Terminal.restoreTerminal();
-  });
+    getOutput: stripAnsi =>
+      if (stripAnsi) {
+        Element.stripAnsi(lastOutput^);
+      } else {
+        lastOutput^;
+      },
 
-  /* Main loop */
-  while (running^) {
-    if (ctx.needsRerender) {
-      ctx.needsRerender = false;
-      Terminal.clearScreen();
+    getLines: stripAnsi => {
+      let output =
+        if (stripAnsi) {
+          Element.stripAnsi(lastOutput^);
+        } else {
+          lastOutput^;
+        };
+      Array.of_list(String.split_on_char('\n', output));
+    },
 
-      /* Set current context and render */
-      Hooks.currentContext := Some(ctx);
-      Hooks.beginRender(ctx);
+    isRunning: () => running^,
 
-      /* Reset component tracking for this render */
-      resetComponentTracking();
+    render: () => {
+      ctx.needsRerender = true;
+      doRender();
+    },
 
-      /* Get terminal dimensions for layout constraints */
-      let (termWidth, termHeight) = Terminal.getSize();
-      let constraints = {
-        availWidth: termWidth,
-        availHeight: termHeight,
-      };
+    resize: (w, h) => {
+      currentWidth := w;
+      currentHeight := h;
+      ctx.needsRerender = true;
+      let _ = doRender();
+      ();
+    },
 
-      let element = C.make();
-      let output = renderElement(element, ctx, constraints);
-      print_string(output);
-      flush(stdout);
+    getSize: () => (currentWidth^, currentHeight^),
 
-      /* Run effects after render */
-      Hooks.runEffects(ctx);
-
-      /* Remove any component contexts that were not rendered this pass */
-      Hooks.cleanupUnmountedComponents(renderedComponentIds^);
-
-      /* Collect key handlers from all component contexts into root context */
-      Hooks.collectKeyHandlers(ctx);
-
-      Hooks.currentContext := None;
-    };
-
-    /* Wait for input on stdin or wake pipe using select */
-    let readFds =
-      switch (wakePipe^) {
-      | Some((readFd, _)) => [Unix.stdin, readFd]
-      | None => [Unix.stdin]
-      };
-
-    let (ready, _, _) =
-      try(Unix.select(readFds, [], [], 0.1)) {
-      | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], []) /* Interrupted by signal */
-      };
-
-    /* Drain wake pipe if it was signaled */
-    let hasWakePipe =
-      switch (wakePipe^) {
-      | Some((readFd, _)) => List.mem(readFd, ready)
-      | None => false
-      };
-    if (hasWakePipe) {
-      drainWakePipe();
-    };
-
-    /* Handle stdin input if ready */
-    if (List.mem(Unix.stdin, ready)) {
-      switch (Terminal.readKey()) {
-      | Some((key, modifiers)) =>
-        List.iter(handler => handler(key, modifiers), ctx.keyHandlers)
-      | None => ()
-      };
-    };
+    quit: () => quit(Hooks.PreserveScreen),
   };
 };
