@@ -423,10 +423,10 @@ let componentNeedsRerender = (componentId: Element.componentId): bool => {
 let propsChanged = (componentId: Element.componentId, newProps: Obj.t): bool =>
   try({
     let prevProps = Hashtbl.find(componentProps, componentId);
-    /* Use physical equality (!=) which is safe for Obj.t values.
+    /* Use physical inequality (!==) which is safe for Obj.t values including functional values.
        This compares pointers for heap values and values for immediates.
        DO NOT use Obj.magic to nativeint - it segfaults on immediate values in OCaml 5! */
-    prevProps != newProps;
+    prevProps !== newProps;
   }) {
   | Not_found => true /* No previous props - treat as changed */
   };
