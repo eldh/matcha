@@ -146,3 +146,162 @@ let group = (name: string, f: unit => unit): unit => {
   f();
   print_newline();
 };
+
+/* ============================================================================
+ * Mocking utilities
+ * ============================================================================ */
+
+/* Create a mock function that records calls and returns preset values.
+ *
+ * Usage:
+ *   let mock = Test.Mock.fn([|"first call", "second call"|]);
+ *   let result = mock.call();  // returns "first call"
+ *   let result2 = mock.call(); // returns "second call"
+ *   Test.assertEqual(mock.callCount(), 2, "called twice");
+ */
+module Mock = {
+  type t('a, 'b) = {
+    call: 'a => 'b,
+    callCount: unit => int,
+    calls: unit => list('a),
+    reset: unit => unit,
+  };
+
+  /* Create a mock that returns values from an array in order */
+  let fn = (returns: array('b)): t(unit, 'b) => {
+    let callIdx = ref(0);
+    let callList: ref(list(unit)) = ref([]);
+
+    {
+      call: () => {
+        callList := [(), ...callList^];
+        let idx = callIdx^;
+        callIdx := idx + 1;
+        if (idx < Array.length(returns)) {
+          returns[idx];
+        } else {
+          returns[Array.length(returns) - 1]; /* Return last value if exhausted */
+        };
+      },
+      callCount: () => List.length(callList^),
+      calls: () => List.rev(callList^),
+      reset: () => {
+        callIdx := 0;
+        callList := [];
+      },
+    };
+  };
+
+  /* Create a mock that takes an argument and returns values from array */
+  let fnWithArg = (returns: array('b)): t('a, 'b) => {
+    let callIdx = ref(0);
+    let callList: ref(list('a)) = ref([]);
+
+    {
+      call: arg => {
+        callList := [arg, ...callList^];
+        let idx = callIdx^;
+        callIdx := idx + 1;
+        if (idx < Array.length(returns)) {
+          returns[idx];
+        } else {
+          returns[Array.length(returns) - 1];
+        };
+      },
+      callCount: () => List.length(callList^),
+      calls: () => List.rev(callList^),
+      reset: () => {
+        callIdx := 0;
+        callList := [];
+      },
+    };
+  };
+
+  /* Create a mock that always returns the same value */
+  let const = (value: 'b): t(unit, 'b) => {
+    let callList: ref(list(unit)) = ref([]);
+
+    {
+      call: () => {
+        callList := [(), ...callList^];
+        value;
+      },
+      callCount: () => List.length(callList^),
+      calls: () => List.rev(callList^),
+      reset: () => callList := [],
+    };
+  };
+
+  /* Create a mock that calls a custom function */
+  let custom = (f: 'a => 'b): t('a, 'b) => {
+    let callList: ref(list('a)) = ref([]);
+
+    {
+      call: arg => {
+        callList := [arg, ...callList^];
+        f(arg);
+      },
+      callCount: () => List.length(callList^),
+      calls: () => List.rev(callList^),
+      reset: () => callList := [],
+    };
+  };
+};
+
+/* Fake timers for testing time-dependent code.
+ *
+ * Usage:
+ *   let time = Test.FakeTime.create(1000.0);  // Start at 1000ms
+ *   time.advance(500.0);                       // Now at 1500ms
+ *   Test.assertEqual(time.now(), 1500.0, "time advanced");
+ */
+module FakeTime = {
+  type t = {
+    now: unit => float,
+    advance: float => unit,
+    set: float => unit,
+  };
+
+  let create = (initial: float): t => {
+    let current = ref(initial);
+
+    {
+      now: () => current^,
+      advance: delta => current := current^ +. delta,
+      set: value => current := value,
+    };
+  };
+};
+
+/* Simple spy to track if/how a function was called.
+ *
+ * Usage:
+ *   let spy = Test.spy();
+ *   someFunction(~callback=spy.fn);
+ *   Test.assertTrue(spy.wasCalled(), "callback was invoked");
+ */
+type spy('a) = {
+  fn: 'a => unit,
+  wasCalled: unit => bool,
+  callCount: unit => int,
+  lastCall: unit => option('a),
+  calls: unit => list('a),
+  reset: unit => unit,
+};
+
+let spy = (): spy('a) => {
+  let callList: ref(list('a)) = ref([]);
+
+  {
+    fn: arg => callList := [arg, ...callList^],
+    wasCalled: () => List.length(callList^) > 0,
+    callCount: () => List.length(callList^),
+    lastCall: () =>
+      switch (callList^) {
+      | [x, ..._] => Some(x)
+      | [] => None
+      },
+    calls: () => List.rev(callList^),
+    reset: () => callList := [],
+  };
+};

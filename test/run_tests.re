@@ -14,6 +14,7 @@ let () = {
   /* Run all test suites */
   Element_tests.run();
   Headless_tests.run();
+  Mock_tests.run();
 
   /* Print summary and exit */
   Test.finish();

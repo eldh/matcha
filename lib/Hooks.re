@@ -179,12 +179,13 @@ let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
   switch (prev) {
   | None => false /* First run, deps don't exist yet */
   | Some(prevDeps) =>
-    if (Array.length(prevDeps) != Array.length(curr)) {
+    if (Array.length(prevDeps) !== Array.length(curr)) {
       false;
     } else {
       let equal = ref(true);
       for (i in 0 to Array.length(prevDeps) - 1) {
-        if (prevDeps[i] != curr[i]) {
+        /* Use !== (physical inequality) to avoid calling compare on functional values */
+        if (prevDeps[i] !== curr[i]) {
           equal := false;
         };
       };
