@@ -17,7 +17,7 @@ include Context.Make({
 module Provider = {
   [@component]
   let make = (~children: Element.t) => {
-    let (height, width) = Terminal.getSize();
+    let (width, height) = Terminal.getSize();
     provide(
       {
         width,

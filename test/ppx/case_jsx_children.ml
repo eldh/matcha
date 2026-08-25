@@ -1,0 +1,10 @@
+let single_child =
+  VStack.createElement ~children:[ Text.createElement () ] ()
+
+let multiple_children =
+  VStack.createElement
+    ~children:[ Text.createElement (); Text.createElement (); Text.createElement () ]
+    ()
+
+let with_props =
+  VStack.createElement ~align:"center" ~children:[ Text.createElement () ] ()

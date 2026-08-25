@@ -1,0 +1,8 @@
+include
+  struct
+    let componentTypeId = "case_zero_arg.ml:1:0"
+    let make () = Text.createElement ()
+    let createElement ?key () =
+      Element.createComponent ?key ~typeId:componentTypeId ()
+        (fun () -> make ())[@@warning "-32"]
+  end

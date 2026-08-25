@@ -1,0 +1,11 @@
+include
+  struct
+    type nonrec props = {
+      name: string ;
+      count: int }
+    let componentTypeId = "case_labeled.ml:1:0"
+    let make props = let { name; count } = props in Text.createElement ()
+    let createElement ?key ~name:(name : string) ~count:(count : int) () =
+      Element.createComponent ?key ~typeId:componentTypeId { name; count }
+        (fun () -> make { name; count })[@@warning "-32"]
+  end

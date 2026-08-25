@@ -88,14 +88,26 @@ let make =
   /* Clamp selected index when filtered results change */
   let currentIndex = min(selectedIndex, maxIndex);
 
-  /* Notify parent of active item */
   let activeItem =
     if (Array.length(filteredItems) > 0) {
       Some(filteredItems[currentIndex]);
     } else {
       None;
     };
-  onActive(activeItem);
+
+  /* Notify parent of the active item from an effect, not during render:
+   * onActive calls the parent's setState, and doing that unconditionally in
+   * the render body re-marks the tree dirty every frame - an infinite
+   * render loop. Keyed on the selection index and filter (stable values)
+   * rather than activeItem itself, whose Some(...) wrapper is a fresh
+   * allocation every render. */
+  Hooks.useEffect(
+    () => {
+      onActive(activeItem);
+      None;
+    },
+    [|Obj.repr(currentIndex), Obj.repr(filter)|],
+  );
 
   Event.useKeyDown((key, modifiers) => {
     switch (key, modifiers) {

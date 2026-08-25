@@ -1,0 +1,14 @@
+; The component is its own library so test/chat_tests.re can link it and
+; drive the exact app the binary runs - see ChatApp.re's header comment.
+(library
+ (name chatApp)
+ (modules chatApp)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))
+
+(executable
+ (name main)
+ (public_name matcha-example-chat)
+ (modules main)
+ (libraries matcha chatApp))

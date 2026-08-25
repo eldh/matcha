@@ -10,6 +10,7 @@
  * - Special keys: Escape, Enter, Backspace, Tab, Delete
  * - Terminal shortcuts: KillLine (Ctrl+U), KillWord (Ctrl+W)
  * - Character input: Char(char) with optional modifiers
+ * - Multi-byte input: Text(string) for one complete UTF-8 codepoint
  *
  * Modifiers:
  * Key presses can have modifiers: ctrl, alt, shift.
@@ -24,7 +25,8 @@ type t =
   | Arrow_down /* Down arrow key */
   | Arrow_left /* Left arrow key */
   | Arrow_right /* Right arrow key */
-  | Char(char) /* Regular character key */
+  | Char(char) /* Regular single-byte (ASCII) character key */
+  | Text(string) /* One complete multi-byte UTF-8 codepoint, e.g. "é" or "日" */
   | Escape /* Escape key */
   | Enter /* Enter/Return key */
   | Backspace /* Backspace key (normalized from code 8 or 127) */
@@ -32,6 +34,13 @@ type t =
   | Delete /* Delete key (forward delete) */
   | KillLine /* Ctrl+U - kill/clear entire line */
   | KillWord /* Ctrl+W - kill/delete previous word */
+  | Home /* Home key (line/document start, terminal-dependent) */
+  | End /* End key (line/document end, terminal-dependent) */
+  | Insert /* Insert key */
+  | Page_up /* Page Up key */
+  | Page_down /* Page Down key */
+  | F(int) /* Function key F1-F12 */
+  | Paste(string) /* Bracketed-paste payload (produced by InputDecoder, step B2/S6 - no parse branch here yet) */
   | Unknown; /* Unrecognized key or sequence */
 
 /* Key modifiers record.
@@ -113,6 +122,77 @@ let logBytes = (bytes: bytes, len: int): unit => {
   };
 };
 
+/* Is bytes[start .. start + len - 1] exactly one complete multi-byte UTF-8
+ * sequence? Requires a valid lead byte (0xC2-0xF4), a length that matches
+ * what the lead byte announces, and valid continuation bytes (0x80-0xBF).
+ */
+let isUtf8Sequence = (bytes: bytes, start: int, len: int): bool =>
+  len >= 2
+  && Char.code(Bytes.get(bytes, start)) >= 0xC2
+  && TextWidth.utf8ExpectedLen(Bytes.get(bytes, start)) == len
+  && {
+    let rec continuations = i =>
+      if (i >= len) {
+        true;
+      } else {
+        let b = Char.code(Bytes.get(bytes, start + i));
+        b >= 0x80 && b <= 0xBF && continuations(i + 1);
+      };
+    continuations(1);
+  };
+
+/* Parse the parameter section of a CSI sequence (the bytes between
+ * `ESC[` and the final byte). Scans forward from `start` for the first
+ * byte in the final-byte range (0x40-0x7E); everything before it is the
+ * parameter string, split on ';' into ints (an empty segment, including
+ * a wholly-empty parameter string, is treated as 1 per terminal
+ * convention for omitted params). Returns None if no final byte is
+ * present within `len`. */
+let parseCsiParams = (bytes: bytes, start: int, len: int): option((list(int), char)) => {
+  let rec findFinal = i =>
+    if (i >= len) {
+      None;
+    } else {
+      let b = Char.code(Bytes.get(bytes, i));
+      if (b >= 0x40 && b <= 0x7E) {
+        Some(i);
+      } else {
+        findFinal(i + 1);
+      };
+    };
+  switch (findFinal(start)) {
+  | None => None
+  | Some(finalIdx) =>
+    let paramStr = Bytes.sub_string(bytes, start, finalIdx - start);
+    let finalChar = Bytes.get(bytes, finalIdx);
+    let parseSegment = s =>
+      if (s == "") {
+        1;
+      } else {
+        switch (int_of_string_opt(s)) {
+        | Some(n) => n
+        | None => 1
+        };
+      };
+    let params =
+      if (paramStr == "") {
+        [];
+      } else {
+        String.split_on_char(';', paramStr) |> List.map(parseSegment);
+      };
+    Some((params, finalChar));
+  };
+};
+
+/* Extract the modifier code (second CSI parameter, e.g. the `5` in
+ * `ESC[1;5H`) and decode it. Sequences with no second parameter (plain
+ * `ESC[H`, `ESC[A`, etc.) carry no modifiers. */
+let modsFromParams = (params: list(int)): modifiers =>
+  switch (params) {
+  | [_, m, ..._] => parseModifierCode(m)
+  | _ => noModifiers
+  };
+
 /* Parse raw terminal input bytes into a normalized key and modifiers.
  *
  * This function handles:
@@ -169,69 +249,113 @@ let parse = (bytes: bytes, len: int): (t, modifiers) => {
   } else if (len >= 3
              && Bytes.get(bytes, 0) == '\027'
              && Bytes.get(bytes, 1) == '[') {
-    /* ANSI escape sequences: ESC [ <code> */
-    /* Check for extended format: ESC[1;{modifier}{key} */
-    if (len >= 6
-        && Bytes.get(bytes, 2) == '1'
-        && Bytes.get(bytes, 3) == ';') {
-      /* Extended arrow key with modifiers: ESC[1;{mod}{key} */
-      /* Parse modifier digit(s) - can be 1 or 2 digits */
-      let (modCode, keyIdx) =
-        if (len >= 7
-            && Bytes.get(bytes, 5) >= '0'
-            && Bytes.get(bytes, 5) <= '9') {
-          /* Two-digit modifier (e.g., 10 for Shift+Meta) */
-          let tens = Char.code(Bytes.get(bytes, 4)) - 48;
-          let ones = Char.code(Bytes.get(bytes, 5)) - 48;
-          (tens * 10 + ones, 6);
-        } else {
-          /* Single-digit modifier */
-          (Char.code(Bytes.get(bytes, 4)) - 48, 5);
-        };
-      let mods = parseModifierCode(modCode);
-      if (keyIdx < len) {
-        switch (Bytes.get(bytes, keyIdx)) {
-        | 'A' => (Arrow_up, mods)
-        | 'B' => (Arrow_down, mods)
-        | 'C' => (Arrow_right, mods)
-        | 'D' => (Arrow_left, mods)
-        | 'H' => (Arrow_left, {...mods, meta: true}) /* Home - start of line */
-        | 'F' => (Arrow_right, {...mods, meta: true}) /* End - end of line */
-        | _ => (Unknown, mods)
-        };
-      } else {
-        (Unknown, noModifiers);
-      };
+    /* ANSI CSI sequences: ESC [ <params> <final>
+     * Home = ESC[H, ESC[1~, ESC[7~, ESC[1;<m>H (ESCOH handled below);
+     * End = ESC[F, ESC[4~, ESC[8~, ESC[1;<m>F (ESCOF handled below);
+     * Insert = ESC[2~; Delete = ESC[3~; Page_up/down = ESC[5~/6~;
+     * ESC[Z = backtab -> Shift+Tab; F1-F4 also reachable via
+     * ESC[1;<m>P..S and legacy ESC[11~..14~; F5-F12 via ESC[15~,
+     * 17~..21~, 23~, 24~ (16 and 22 are gaps); Linux console
+     * ESC[[A..E -> F1-F5; kitty CSI-u ESC[<code>;<m>u. */
+    if (len >= 4
+        && Bytes.get(bytes, 2) == '['
+        && Bytes.get(bytes, 3) >= 'A'
+        && Bytes.get(bytes, 3) <= 'E') {
+      /* Linux console function keys: ESC[[A..E -> F1..F5 */
+      let n = Char.code(Bytes.get(bytes, 3)) - Char.code('A') + 1;
+      (F(n), noModifiers);
     } else {
-      /* Simple arrow keys: ESC[A/B/C/D and special keys */
-      let metaMods = {ctrl: false, alt: false, shift: false, meta: true};
-      switch (Bytes.get(bytes, 2)) {
-      | 'A' => (Arrow_up, noModifiers)
-      | 'B' => (Arrow_down, noModifiers)
-      | 'C' => (Arrow_right, noModifiers)
-      | 'D' => (Arrow_left, noModifiers)
-      | 'H' => (Arrow_left, metaMods) /* Home - start of line */
-      | 'F' => (Arrow_right, metaMods) /* End - end of line */
-      | '1' when len >= 4 && Bytes.get(bytes, 3) == '~' => (Arrow_left, metaMods) /* ESC[1~ = Home */
-      | '4' when len >= 4 && Bytes.get(bytes, 3) == '~' => (Arrow_right, metaMods) /* ESC[4~ = End */
-      | '3' when len >= 4 && Bytes.get(bytes, 3) == '~' => (Delete, noModifiers)
-      | _ => (Unknown, noModifiers)
+      switch (parseCsiParams(bytes, 2, len)) {
+      | None => (Unknown, noModifiers)
+      | Some((params, finalChar)) =>
+        let m = modsFromParams(params);
+        switch (finalChar) {
+        | 'A' => (Arrow_up, m)
+        | 'B' => (Arrow_down, m)
+        | 'C' => (Arrow_right, m)
+        | 'D' => (Arrow_left, m)
+        | 'H' => (Home, m)
+        | 'F' => (End, m)
+        | 'P' => (F(1), m)
+        | 'Q' => (F(2), m)
+        | 'R' => (F(3), m)
+        | 'S' => (F(4), m)
+        | 'Z' =>
+          switch (params) {
+          | [] => (Tab, {ctrl: false, alt: false, shift: true, meta: false}) /* backtab */
+          | _ => (Unknown, m)
+          }
+        | '~' =>
+          switch (params) {
+          | [] => (Unknown, noModifiers)
+          | [code, ..._] =>
+            switch (code) {
+            | 1
+            | 7 => (Home, m)
+            | 2 => (Insert, m)
+            | 3 => (Delete, m)
+            | 4
+            | 8 => (End, m)
+            | 5 => (Page_up, m)
+            | 6 => (Page_down, m)
+            | 11 => (F(1), m)
+            | 12 => (F(2), m)
+            | 13 => (F(3), m)
+            | 14 => (F(4), m)
+            | 15 => (F(5), m)
+            | 17 => (F(6), m)
+            | 18 => (F(7), m)
+            | 19 => (F(8), m)
+            | 20 => (F(9), m)
+            | 21 => (F(10), m)
+            | 23 => (F(11), m)
+            | 24 => (F(12), m)
+            | _ => (Unknown, m)
+            }
+          }
+        | 'u' =>
+          /* Kitty disambiguate-only CSI-u: ESC[<code>;<mods>u */
+          switch (params) {
+          | [] => (Unknown, noModifiers)
+          | [code, ..._] =>
+            switch (code) {
+            | 13 => (Enter, m)
+            | 9 => (Tab, m)
+            | 27 => (Escape, m)
+            | 127 => (Backspace, m)
+            | c when c >= 32 && c <= 126 => (Char(Char.chr(c)), m)
+            | _ => (Unknown, m)
+            }
+          }
+        | _ => (Unknown, m)
+        };
       };
     };
   } else if (len >= 3
              && Bytes.get(bytes, 0) == '\027'
              && Bytes.get(bytes, 1) == 'O') {
-    /* Application mode keys: ESC O <key> */
-    let metaMods = {ctrl: false, alt: false, shift: false, meta: true};
+    /* Application mode keys: ESC O <key> (SS3) */
     switch (Bytes.get(bytes, 2)) {
-    | 'H' => (Arrow_left, metaMods) /* Home - start of line */
-    | 'F' => (Arrow_right, metaMods) /* End - end of line */
+    | 'H' => (Home, noModifiers)
+    | 'F' => (End, noModifiers)
     | 'A' => (Arrow_up, noModifiers)
     | 'B' => (Arrow_down, noModifiers)
     | 'C' => (Arrow_right, noModifiers)
     | 'D' => (Arrow_left, noModifiers)
+    | 'P' => (F(1), noModifiers)
+    | 'Q' => (F(2), noModifiers)
+    | 'R' => (F(3), noModifiers)
+    | 'S' => (F(4), noModifiers)
     | _ => (Unknown, noModifiers)
     };
+  } else if (len >= 3
+             && Bytes.get(bytes, 0) == '\027'
+             && isUtf8Sequence(bytes, 1, len - 1)) {
+    /* Alt + a multi-byte character: ESC followed by one UTF-8 codepoint */
+    (
+      Text(Bytes.sub_string(bytes, 1, len - 1)),
+      {ctrl: false, alt: true, shift: false, meta: false},
+    );
   } else if (len >= 2 && Bytes.get(bytes, 0) == '\027') {
     /* Alt+key: ESC followed by character */
     /* Handle Emacs-style navigation (common on macOS terminals) */
@@ -250,6 +374,9 @@ let parse = (bytes: bytes, len: int): (t, modifiers) => {
       let mods = if (isUpper) { altShiftMods } else { altMods };
       (Char(c), mods)
     };
+  } else if (isUtf8Sequence(bytes, 0, len)) {
+    /* One complete multi-byte UTF-8 codepoint typed as-is */
+    (Text(Bytes.sub_string(bytes, 0, len)), noModifiers);
   } else {
     (Unknown, noModifiers);
   };

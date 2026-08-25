@@ -14,3 +14,15 @@ let useKeyDown = Hooks.useKeyDown;
  * See Hooks.useQuit for full documentation.
  */
 let useQuit = Hooks.useQuit;
+
+/* Focus (B1): claim a focus id, imperatively move focus, and gate a key
+ * handler on being focused. See Hooks.useFocus/useFocusManager/useInput for
+ * full documentation.
+ */
+let useFocus = Hooks.useFocus;
+let useFocusManager = Hooks.useFocusManager;
+let useInput = Hooks.useInput;
+
+/* Mouse (B4): register a handler for mouse events hitting this component's
+ * rendered box. See Hooks.useMouse. */
+let useMouse = Hooks.useMouse;

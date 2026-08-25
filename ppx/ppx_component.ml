@@ -32,6 +32,28 @@ let rec collect_type_vars typ acc =
 let option_type ~loc t =
   Ast_builder.Default.ptyp_constr ~loc { txt = Lident "option"; loc } [t]
 
+(* Build a stable component type ID string "<file>:<line>:<col>" from a
+   location, computed at expansion time (do not rely on __LOC__). *)
+let type_id_string (loc : location) =
+  let pos = loc.loc_start in
+  Printf.sprintf "%s:%d:%d" pos.pos_fname pos.pos_lnum
+    (pos.pos_cnum - pos.pos_bol)
+
+(* let componentTypeId = "<file>:<line>:<col>" *)
+let component_type_id_binding ~loc =
+  Ast_builder.Default.pstr_value ~loc Nonrecursive
+    [
+      Ast_builder.Default.value_binding ~loc
+        ~pat:
+          (Ast_builder.Default.ppat_var ~loc { txt = "componentTypeId"; loc })
+        ~expr:
+          (Ast_builder.Default.pexp_constant ~loc
+             (Pconst_string (type_id_string loc, loc, None)));
+    ]
+
+let component_type_id_expr ~loc =
+  Ast_builder.Default.pexp_ident ~loc { txt = Lident "componentTypeId"; loc }
+
 let component_mapper =
   object (self)
     inherit Ast_traverse.map as super
@@ -178,6 +200,7 @@ let component_mapper =
                 (Ast_builder.Default.pexp_ident ~loc 
                    { txt = Ldot (Lident "Element", "createComponent"); loc })
                 [Optional "key", key_expr;
+                 Labelled "typeId", component_type_id_expr ~loc;
                  Nolabel, unit_expr;
                  Nolabel, render_thunk]
             in
@@ -202,12 +225,13 @@ let component_mapper =
                    ~expr:create_element_fun) with pvb_attributes = [warning_attr] }]
             in
 
-            (* Return: let make, let createElement *)
+            (* Return: let componentTypeId, let make, let createElement *)
             Ast_builder.Default.pstr_include ~loc
               {
                 pincl_mod =
                   Ast_builder.Default.pmod_structure ~loc
-                    [ make_binding; create_element_binding ];
+                    [ component_type_id_binding ~loc; make_binding;
+                      create_element_binding ];
                 pincl_loc = loc;
                 pincl_attributes = [];
               }
@@ -367,6 +391,7 @@ let component_mapper =
                 (Ast_builder.Default.pexp_ident ~loc 
                    { txt = Ldot (Lident "Element", "createComponent"); loc })
                 [Optional "key", key_expr;
+                 Labelled "typeId", component_type_id_expr ~loc;
                  Nolabel, props_record;
                  Nolabel, render_thunk]
             in
@@ -391,12 +416,13 @@ let component_mapper =
                    ~expr:create_element_fun) with pvb_attributes = [warning_attr] }]
             in
 
-            (* Return: type props, let make, let createElement *)
+            (* Return: type props, let componentTypeId, let make, let createElement *)
             Ast_builder.Default.pstr_include ~loc
               {
                 pincl_mod =
                   Ast_builder.Default.pmod_structure ~loc
-                    [ props_type; make_binding; create_element_binding ];
+                    [ props_type; component_type_id_binding ~loc; make_binding;
+                      create_element_binding ];
                 pincl_loc = loc;
                 pincl_attributes = [];
               }

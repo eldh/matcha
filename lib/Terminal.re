@@ -53,6 +53,13 @@ let moveCursor = (row: int, col: int) => {
  * Disables:
  * - Canonical mode (line buffering)
  * - Echo (typed characters aren't shown)
+ * - Signal generation (ISIG): Ctrl+C/Ctrl+Z arrive as ordinary bytes
+ *   (0x03/0x1a) for the application's own key handlers instead of raising
+ *   SIGINT/SIGTSTP - a SIGINT would kill the process before any useKeyDown
+ *   handler OR the at_exit terminal restore ran, leaving the terminal in
+ *   raw+mouse mode. Every example binds Ctrl+C (or q) itself.
+ * - Flow control (IXON): Ctrl+S/Ctrl+Q arrive as bytes too, rather than
+ *   silently freezing/unfreezing output.
  *
  * Sets non-blocking read with 100ms timeout.
  * The original settings are saved for later restoration.
@@ -64,10 +71,72 @@ let setRawMode = () => {
     ...termio,
     Unix.c_icanon: false,
     Unix.c_echo: false,
+    Unix.c_isig: false,
+    Unix.c_ixon: false,
     Unix.c_vmin: 0,
     Unix.c_vtime: 1,
   };
   Unix.tcsetattr(Unix.stdin, Unix.TCSANOW, rawTermio);
+  /* Push the kitty keyboard protocol in disambiguate-only mode: legacy
+   * keys keep sending their legacy sequences, but otherwise-ambiguous
+   * ones (ESC itself, modified Enter/Tab) arrive as CSI-u instead.
+   * Ignored outright by terminals that don't support it. */
+  print_string("\027[>1u");
+  /* Enable bracketed paste (B2/S6): pasted text arrives wrapped in
+   * ESC[200~ ... ESC[201~ instead of as indistinguishable keystrokes.
+   * InputDecoder recognizes the wrapper and surfaces the body as one
+   * Key.Paste event. Ignored by terminals that don't support it. */
+  print_string("\027[?2004h");
+  flush(stdout);
+};
+
+/* Turn on mouse reporting (B4).
+ *
+ * ESC[?1002h is BUTTON-EVENT tracking: presses, releases, wheel, and motion
+ * only WHILE a button is held - deliberately not ?1003 (any-motion), which
+ * would flood the input stream with a report per cursor cell moved.
+ * ESC[?1006h asks for the SGR encoding, whose coordinates are not capped at
+ * column/row 223 the way the original X10 encoding is.
+ *
+ * Called by the interactive loop when the UI starts wanting mouse events
+ * (Hooks.hasMouseHandlers), never in headless mode. Note that while this is
+ * on, the terminal's own text selection typically needs a modifier
+ * (Shift/Option, depending on the terminal).
+ */
+let enableMouse = () => {
+  print_string("\027[?1002;1006h");
+  flush(stdout);
+};
+
+/* Turn mouse reporting back off - the exact inverse of enableMouse. Called
+ * when the last useMouse handler goes away; restoreTerminal also sends it
+ * unconditionally on every exit path. */
+let disableMouse = () => {
+  print_string("\027[?1002;1006l");
+  flush(stdout);
+};
+
+/* Switch to the ALTERNATE screen buffer (ESC[?1049h).
+ *
+ * The alternate screen is a second, scrollback-less buffer: the current
+ * screen contents (and the scroll position) are saved, the app gets a blank
+ * viewport it owns entirely, and exitAltScreen puts the previous contents
+ * back. This is what vim/htop/less do, and what Runtime's Fullscreen screen
+ * mode uses. Ignored by terminals that don't support it.
+ */
+let enterAltScreen = () => {
+  print_string("\027[?1049h");
+  flush(stdout);
+};
+
+/* Leave the alternate screen buffer (ESC[?1049l) - the exact inverse of
+ * enterAltScreen. The terminal restores whatever was on the normal screen
+ * before the app started, which IS the correct restore for a fullscreen app.
+ * restoreTerminal also sends it unconditionally on every exit path.
+ */
+let exitAltScreen = () => {
+  print_string("\027[?1049l");
+  flush(stdout);
 };
 
 /* Restore terminal to its original state.
@@ -80,6 +149,26 @@ let restoreTerminal = () => {
   | Some(termio) => Unix.tcsetattr(Unix.stdin, Unix.TCSANOW, termio)
   | None => ()
   };
+  /* Pop the kitty keyboard protocol stack unconditionally - safe to send
+   * even if it was never successfully pushed (or the terminal doesn't
+   * support it at all), and must run on every exit path (crash-safe via
+   * the existing at_exit registration). */
+  print_string("\027[<u");
+  /* Disable bracketed paste and SGR mouse reporting unconditionally, for
+   * the same crash-safety reason: both are TTY-path-only escape emissions
+   * (setRawMode / mouse auto-enable), so disabling them here even when
+   * they were never turned on this run is harmless, and this is the one
+   * path that reliably runs on every exit (normal quit, crash, or
+   * kill - via the existing at_exit registration). */
+  print_string("\027[?2004l");
+  print_string("\027[?1002;1006l");
+  /* Leave the alternate screen unconditionally, same crash-safety
+   * rationale: only Runtime's Fullscreen screen mode ever enters it, and
+   * leaving an alternate screen that was never entered is a no-op on every
+   * terminal - so sending it here, on the one path that reliably runs on
+   * every exit, is what guarantees a crashed fullscreen app cannot strand
+   * the user on a blank alternate buffer. */
+  print_string("\027[?1049l");
   showCursor();
   print_newline();
 };
@@ -88,6 +177,15 @@ let restoreTerminal = () => {
  *
  * Non-blocking: returns None if no key is available.
  * Handles escape sequences for arrow keys, function keys, etc.
+ *
+ * Superseded by readBytes + InputDecoder (B2/S6): a single 8-byte read
+ * handed straight to Key.parse can't correctly frame a bracketed paste, a
+ * mouse report, or even a fast multi-character read (several keys in one
+ * read() used to come back as one indistinguishable Unknown - see
+ * InputDecoder's doc comment). Runtime's loops no longer call this. Kept
+ * exported for API stability - it's a reasonable one-shot read for a
+ * caller that only cares about simple keys and doesn't want the decoder's
+ * statefulness.
  */
 let readKey = (): option((Key.t, Key.modifiers)) => {
   let buf = Bytes.create(8);
@@ -100,6 +198,35 @@ let readKey = (): option((Key.t, Key.modifiers)) => {
     Some(Key.parse(buf, n));
   } else {
     None;
+  };
+};
+
+/* Read up to 4096 raw bytes from stdin into a fresh buffer.
+ *
+ * This is the read side of the InputDecoder pipeline (B2/S6):
+ * `Terminal.readBytes() -> InputDecoder.feed` replaces the old
+ * `readKey`/`Key.parse` pipeline in Runtime's loops. Non-blocking (relies
+ * on the caller having already selected on stdin, same as readKey);
+ * returns None on EOF (a zero-byte read), Some(buf, n) otherwise, where
+ * only buf[0..n-1] is valid - the rest of a freshly allocated buffer is
+ * unspecified.
+ */
+let readBytes = (): option((bytes, int)) => {
+  let buf = Bytes.create(4096);
+  let n =
+    try(Unix.read(Unix.stdin, buf, 0, 4096)) {
+    | Unix.Unix_error(Unix.EINTR, _, _) => (-1)
+    };
+
+  if (n > 0) {
+    Some((buf, n));
+  } else if (n == 0) {
+    None; /* EOF */
+  } else {
+    /* EINTR: nothing read, but not EOF either - an empty-but-present
+     * chunk lets InputDecoder.feed see zero bytes without the caller
+     * mistaking this for EOF. */
+    Some((buf, 0));
   };
 };
 

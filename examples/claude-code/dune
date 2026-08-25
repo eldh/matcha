@@ -1,0 +1,14 @@
+; Component library + thin launcher, so test/claudecode_tests.re can drive
+; the exact app the binary runs - same split as examples/chat.
+(library
+ (name claudeCodeApp)
+ (modules claudeCodeApp)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))
+
+(executable
+ (name main)
+ (public_name matcha-example-claude-code)
+ (modules main)
+ (libraries matcha claudeCodeApp))

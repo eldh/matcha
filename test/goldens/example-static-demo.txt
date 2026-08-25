@@ -1,0 +1,6 @@
+> what is matcha?
+1. A React-like framework for terminal UIs, in ReasonML.
+
+Matcha static demo
+committed: 1/4   raw writes: 0
+a/Enter: append   w: write   q: quit

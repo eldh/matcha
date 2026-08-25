@@ -1,0 +1,6 @@
+Hello, World!
+
+Welcome to Rere - a React-like terminal UI library for ReasonML.
+
+
+Press Q to quit.

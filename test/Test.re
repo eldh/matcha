@@ -41,6 +41,31 @@ let run = (name: string, f: unit => unit): unit => {
   };
 };
 
+/* Run a test that documents a known, not-yet-fixed bug.
+ * It PASSES (reported as XFAIL) when f raises - the bug still exists.
+ * It FAILS (reported as XPASS) when f succeeds - the bug appears fixed,
+ * so convert the test to a regular Test.run to lock in the fix.
+ */
+let runExpectedFailure = (name: string, f: unit => unit): unit => {
+  currentTest := name;
+  print_string("  " ++ name ++ " ... ");
+  flush(stdout);
+  switch (f()) {
+  | () =>
+    failCount := failCount^ + 1;
+    errors :=
+      [
+        name
+        ++ ": expected failure, but the test passed. The bug appears fixed - convert this to Test.run.",
+        ...errors^,
+      ];
+    print_endline(red ++ "XPASS (convert to Test.run)" ++ reset);
+  | exception _ =>
+    passCount := passCount^ + 1;
+    print_endline(yellow ++ "XFAIL (known bug)" ++ reset);
+  };
+};
+
 /* Assertions */
 exception AssertionFailed(string);
 

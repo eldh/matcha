@@ -21,15 +21,24 @@ module Context = Context;
 module Event = Event;
 module Hooks = Hooks;
 module Key = Key;
+module TextWidth = TextWidth;
+module StyledText = StyledText;
+module Mouse = Mouse;
+module InputDecoder = InputDecoder;
 module Runtime = Runtime;
 module Terminal = Terminal;
+module FrameDiff = FrameDiff;
+module LiveRegion = LiveRegion;
 
 /* JSX Element components available at top level */
 module Text = Element.Text; /* Text with optional styling props */
 module VStack = Element.VStack; /* Vertical flex stack */
 module HStack = Element.HStack; /* Horizontal flex stack */
 module Sized = Element.Sized; /* Size wrapper for stack children */
-module TextArea = Element.TextArea; /* Multi-line text editor */
+module Static = Element.Static; /* Append-only output above the live region */
+module Clickable = Clickable; /* Wrap an element to make it click-target-able */
+module ScrollView = ScrollView; /* Scrolling window onto oversized content */
+module TextArea = TextArea; /* Multi-line text editor with a blinking cursor */
 
 /* Size type for flex layout */
 type size = Element.size;
@@ -46,6 +55,11 @@ type constraints = Runtime.constraints;
  * Call this within a component to get the space allocated by the parent Stack.
  */
 let useLayout = Runtime.getConstraints;
+
+/* Write plain text above the live region (Ink's useStdout). See
+ * Hooks.useStdout; prefer <Static> for lists of rendered items. */
+type stdoutHandle = Hooks.stdoutHandle;
+let useStdout = Hooks.useStdout;
 
 /* Color type and variants for text styling */
 type color = Element.color;

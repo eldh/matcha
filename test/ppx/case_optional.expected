@@ -1,0 +1,12 @@
+include
+  struct
+    type nonrec props = {
+      first: string ;
+      second: string option }
+    let componentTypeId = "case_optional.ml:1:0"
+    let make props = let { first; second } = props in Text.createElement ()
+    let createElement ?key ~first:(first : string)
+      ?second:(second : string option) () =
+      Element.createComponent ?key ~typeId:componentTypeId { first; second }
+        (fun () -> make { first; second })[@@warning "-32"]
+  end

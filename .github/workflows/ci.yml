@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.3"
+
+      - name: Install dependencies
+        run: opam install . --deps-only --with-test
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Test
+        run: opam exec -- dune runtest
+
+      - name: Headless smoke test
+        if: runner.os == 'Linux'
+        run: |
+          output=$(timeout 15 env MATCHA_HEADLESS=1 MATCHA_WIDTH=80 MATCHA_HEIGHT=24 \
+            opam exec -- dune exec matcha-example-counter < /dev/null)
+          echo "$output" | head -40
+          test -n "$output"

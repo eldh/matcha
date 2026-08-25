@@ -1,0 +1,47 @@
+(executable
+ (name pp)
+ (libraries ppxlib ppx_component))
+
+(rule
+ (targets case_zero_arg.actual)
+ (deps pp.exe case_zero_arg.ml)
+ (action
+  (run ./pp.exe -impl case_zero_arg.ml -pretty -o case_zero_arg.actual)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff case_zero_arg.expected case_zero_arg.actual)))
+
+(rule
+ (targets case_labeled.actual)
+ (deps pp.exe case_labeled.ml)
+ (action
+  (run ./pp.exe -impl case_labeled.ml -pretty -o case_labeled.actual)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff case_labeled.expected case_labeled.actual)))
+
+(rule
+ (targets case_optional.actual)
+ (deps pp.exe case_optional.ml)
+ (action
+  (run ./pp.exe -impl case_optional.ml -pretty -o case_optional.actual)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff case_optional.expected case_optional.actual)))
+
+(rule
+ (targets case_jsx_children.actual)
+ (deps pp.exe case_jsx_children.ml)
+ (action
+  (run ./pp.exe -impl case_jsx_children.ml -pretty -o case_jsx_children.actual)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff case_jsx_children.expected case_jsx_children.actual)))

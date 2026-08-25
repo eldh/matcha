@@ -1,0 +1,30 @@
+Layout Alignment Example
+Demonstrates align and justify props for HStack/VStack
+
+Demo:
+┌────────────────────────────────────────────────────────────────────┐
++------+ +------+ +------+
+|  A   | |      | |      |
++------+ |  B   | |  C   |
+         |      | +------+
+         +------+
+
+
+
+
+
+
+
+└────────────────────────────────────────────────────────────────────┘
+
+─────────────────────────────────────────────────
+
+Mode:  HStack  (Tab to toggle)
+
+Justify:  JustifyStart
+  1: Start  2: End  3: Center  4: SpaceBetween  5: SpaceAround  6: SpaceEvenly
+
+Align:  AlignStart
+  a: Start  s: End  d: Center  f: Stretch
+
+q: Quit

@@ -1,0 +1,11 @@
+Counter Example
+
+
+Count: 0
+
+
+[                                                  ]
+
+
+
+↑/k: Increment  ↓/j: Decrement  r: Reset  q: Quit

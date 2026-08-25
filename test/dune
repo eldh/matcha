@@ -5,23 +5,50 @@
 ; Run tests with: dune test
 (test
  (name run_tests)
- (modules run_tests headless_tests element_tests mock_tests)
- (libraries matcha test)
- (deps (universe))  ; Always re-run, don't cache
- (preprocess
-  (pps ppx_component)))
-
-(executable
- (name operator_test)
- (modules operator_test))
-
-(executable
- (name compare_methods_test)
- (modules compare_methods_test))
-
-(executable
- (name useMemo_fix_test)
- (modules useMemo_fix_test)
- (libraries matcha unix)
+ (modules
+  run_tests
+  headless_tests
+  element_tests
+  mock_tests
+  hooks_regression_tests
+  golden
+  golden_tests
+  framediff_tests
+  input
+  key_tests
+  textwidth_tests
+  styledtext_tests
+  layout_tests
+  textarea_tests
+  context_tests
+  repro_tests
+  timer_tests
+  paste_tests
+  mouse_parse_tests
+  mouse_tests
+  focus_tests
+  liveregion_tests
+  static_tests
+  scrollview_tests
+  chat_tests
+  claudecode_tests)
+ (libraries matcha test unix chatApp claudeCodeApp)
+ (deps
+  (universe) ; Always re-run, don't cache
+  (glob_files goldens/*.txt)
+  ../examples/hello-world/main.exe
+  ../examples/counter/main.exe
+  ../examples/optional-params/main.exe
+  ../examples/nested-components/main.exe
+  ../examples/keyed-switch/main.exe
+  ../examples/layout-demo/main.exe
+  ../examples/layout-alignment/main.exe
+  ../examples/textarea-demo/main.exe
+  ../examples/async-fetch/main.exe
+  ../examples/people-list/main.exe
+  ../examples/static-demo/main.exe
+  ../examples/scroll-demo/main.exe
+  ../examples/chat/main.exe
+  ../examples/claude-code/main.exe)
  (preprocess
   (pps ppx_component)))

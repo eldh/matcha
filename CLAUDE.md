@@ -1,0 +1,222 @@
+# Matcha
+
+Matcha is a React-like terminal UI (TUI) framework for ReasonML/OCaml: a
+component tree with hooks (`useState`, `useEffect`, `useMemo`, `useInterval`,
+`useFocus`, `useInput`, `useMouse`, ...), a flexbox-like layout engine
+(`VStack`/`HStack`/`Sized` with `Flex`/`Percent`/`Chars`/`Auto` sizing),
+unicode-aware text measurement and wrapping, a normalized keyboard/paste/mouse
+input model, focus management, an append-only `<Static>` transcript above an
+inline live region, `<ScrollView>`/`<Clickable>`, and both an interactive
+terminal runtime and a headless runtime for testing/agents. The public API
+surface is `lib/Matcha.re`, pinned by the interface file `lib/Matcha.rei`;
+everything else under `lib/` is implementation. `examples/` holds 14 runnable
+sample apps (`examples/chat` is the capstone that uses most capabilities at
+once); `test/` holds a hand-rolled test suite (currently ~500 tests, including
+golden frame tests).
+
+## Toolchain
+
+- OCaml >= 5.3.0, dune >= 3.0, Reason >= 3.12.0, ppxlib >= 0.36.0.
+- Local opam switch lives in `_opam/` — activate it (`opam switch` /
+  `eval $(opam env)`) before running dune commands if it's not already active.
+- Build: `dune build` (~seconds for incremental; a clean build is closer to a
+  minute depending on machine).
+- Test: `dune runtest` (hand-rolled framework, `test/Test.re` /
+  `test/run_tests.re`; runs in a few seconds — it's not a real process-spawn
+  suite, just OCaml function calls).
+
+**Dev profile promotes warnings to errors.** An unused binding, unused open,
+or similar warning will hard-fail `dune build`/`dune runtest` in dev profile
+(the default). Don't suppress with `[@warning]` unless the PPX itself needs
+it (it already does, for generated `createElement` bindings) — fix the
+underlying unused code instead.
+
+## Verification loop
+
+1. **`dune runtest`** for logic changes — hooks, layout math, key parsing,
+   element utilities. This is the fast, primary feedback loop. For testing an
+   *application* built on Matcha (input, focus, timers, static output, mouse,
+   scrolling), `test/chat_tests.re` is the reference: it drives the real
+   `examples/chat` component headlessly and demonstrates every technique an
+   app test needs, one per test group.
+2. **Golden/snapshot rendering tests** — `test/golden.re` (the helpers) and
+   `test/golden_tests.re` (the cases), comparing rendered frames against
+   fixture files in `test/goldens/*.txt`. Frames are compared after
+   `stripAnsi` and trailing-whitespace normalization. Cases cover a few small
+   in-process components plus every example binary rendered headlessly. Any
+   change to layout or rendering shows up here first — **a golden diff you did
+   not intend is a bug, not a fixture to refresh.** After an *intentional*
+   rendering change, regenerate from the repo root:
+
+   ```
+   UPDATE_GOLDENS=1 dune exec test/run_tests.exe
+   ```
+
+   Prefer adding to this pattern over inventing a new one.
+3. **Headless smoke run** for end-to-end sanity on a real example app:
+
+   ```
+   timeout 10 env MATCHA_HEADLESS=1 dune exec matcha-example-counter < /dev/null
+   ```
+
+   This prints each rendered frame to stdout and reads keys from stdin until
+   EOF. It is not a substitute for `dune runtest` — use it to eyeball that an
+   example still renders and responds to input, not as your only check.
+
+**HANG TRAP: never run an example without `MATCHA_HEADLESS=1`.** Without it,
+`Runtime.start` puts the terminal in raw mode and blocks waiting for a real
+TTY/keyboard — it will hang the calling process/agent indefinitely.
+
+**HANG TRAP: even in headless mode, the process blocks until stdin EOF.**
+`MATCHA_HEADLESS=1 dune exec ...` alone will still hang if stdin is not
+closed or redirected. Always combine `timeout N`, `MATCHA_HEADLESS=1`, and
+`< /dev/null` (or a pipe that eventually closes) together, exactly as in the
+verification-loop command above.
+
+## Architecture map
+
+| Module | Responsibility | Approx. size |
+|---|---|---|
+| `lib/Element.re` | Element tree type (`Text`, `Styled`, `VStack`, `HStack`, `Sized`, `Component`, `Lazy`, `WithContext`, `Static`, `WrappedText`, `Viewport`, `Empty`); ANSI escape/style utilities; string utils (`visibleLength`, `padToWidth`, `stripAnsi`, `repeatString`, `splitLines` — all cell-based via `TextWidth`); JSX-compatible `Text` (with `~wrap`)/`VStack`/`HStack`/`Sized`/`Fragment`/`TextArea` (the *pure* editor renderer — `renderSegment`/`renderLine`/`make` take `~cursorVisible`; the blinking `<TextArea>` apps use is `lib/TextArea.re`). Its **soft-wrap display mapping** — `wrapSegments`/`displayRows`/`cursorDisplayRow` turn logical lines into `(logicalRow, startCell, cellCount)` display rows, `make` paints the window that keeps the cursor visible, and `measure` reports that height so a container can size itself around a growing input — is display only: `handleKeyDown` and every cursor/selection column stay logical/`Static` component modules; the simple non-layout `render` function, which delegates `Component` nodes to Runtime through the `componentRenderer` ref. `Component(typeId, key, props, renderFn)` is a pure *description* of a call site — no mutable per-instance state, no output cache. | ~1800 lines |
+| `lib/Runtime.re` | Layout engine (flex distribution, align/justify, size resolution) and `renderElement` — one recursive renderer with a real mode (applies layout) and a **measuring mode** (`~measuring=true`, layout-free, used to find an `Auto` child's natural size, so stacks visit those children twice per frame), plus `~origin` threading for mouse bounds (the *committed* pass is `!measuring && origin != None`); component identity as a tree path (`childPath`/`componentPath` → the per-instance path→stableId registry); the commit phase (render, `Hooks.commitEffects`, unmount sweep, key-handler collection, `commitFocus`, static drain); detached rendering for `Element.render`; the interactive main loop (`start(~screen: screenMode=Inline, ...)`) — `Inline` rendering through `LiveRegion` (DSR cursor tracking, relative addressing) or `Fullscreen` rendering on the alternate screen through `FrameDiff.diff` (frame padded to `termHeight`, absolute addressing, `<Static>`/`useStdout` rejected), terminal setup, SIGWINCH, wake-pipe, `InputDecoder`-fed event dispatch, interest-driven mouse-mode enable; headless support (`startHeadless` and its handle: `sendKey`/`sendPaste`/`sendMouse`/`getOutput`/`getLines`/`getStaticOutput`/`getFocusedId`/`advanceTime`/`resize`/`quit`); `useLayout`/`constraints`. Read its module header for the full render model. | ~2280 lines |
+| `lib/Hooks.re` | Hook storage (`StateHook`/`EffectHook`/`MemoHook`/`RefHook`) and per-component render contexts; slot hooks `useState`/`useEffect`/`useEffectAlways`/`useMemo`/`useRef` and registration hooks `useKeyDown`/`useInput`/`useMouse`/`useFocus`/`useFocusManager`/`useQuit`/`useStdout`; timers (`useInterval`/`useTimeout`, virtual-clock backed headlessly); the `instanceState` record that holds *all* per-application state (component contexts, path→ID registry, root context, effect commit queue, focus state, timers, static/raw output queues, component bounds) — Runtime installs a fresh one per start; effect scheduling with commit-phase dep writes; `dispatchKey` (Tab focus cycling) and `dispatchMouse` (innermost-wins, wheel-interest) dispatch. | ~1630 lines |
+| `lib/Key.re` | `Key.t` ADT (incl. `Text` for multi-byte input and `Paste`) and the raw-byte escape-sequence parser (`parse`) that normalizes terminal input — arrows, Ctrl/Alt/Meta/Shift combinations, backtab, CSI-u/kitty sequences, Backspace/Delete/Tab/KillLine/KillWord. | ~380 lines |
+| `lib/TextWidth.re` | UTF-8 decoding and terminal display width: `decodeUtf8`, `charWidth` (wcwidth-style), ANSI-aware `stringWidth`, and the `cell` splitter `toCells`. All layout measurement is done in the columns this reports. | ~260 lines |
+| `lib/StyledText.re` | ANSI-aware wrapping/truncation of already-rendered styled text: `parse`/`bake` (styled string ↔ per-cell chunks), `wrapString` (behind `<Text wrap>`), truncate variants, `sliceLines` (behind `Viewport`). Pure. | ~560 lines |
+| `lib/InputDecoder.re` | Stateful byte-stream assembler between `Terminal.readBytes` and dispatch: reassembles raw reads into `KeyEvent`/`PasteEvent` (bracketed paste)/`MouseEvent`/`CursorReport` regardless of how bytes were split across reads (`feed`/`flush`; lone-ESC 25ms deadline). | ~400 lines |
+| `lib/LiveRegion.re` | Pure inline frame patcher with RELATIVE cursor addressing: `patch` turns the painted live region into the next frame, committing `<Static>`/`useStdout` lines above it; `erase` removes the region. What the interactive loop writes — no `ESC[2J`, sync guards around each paint. | ~270 lines |
+| `lib/Mouse.re` | SGR (1006) mouse event types, `parseSgr`/`encodeSgr`, and rect helpers (`contains`/`intersect`) for the bounds registry. Pure. | ~210 lines |
+| `lib/ScrollView.re` | `<ScrollView>` — a focusable, wheel-scrollable window onto taller content, built on `Element.Viewport`; uncontrolled by default, controllable via `~offset`/`~onScroll`; `scrollbarMetrics` is the pure thumb geometry. | ~220 lines |
+| `lib/TextArea.re` | `<TextArea>` as applications get it (`Matcha.TextArea`): `include Element.TextArea` for everything pure, plus a shadowing `createElement` that wraps the renderer in a real component owning the cursor blink (`useState` + `useInterval` at 530ms, feeding `~cursorVisible`). `~blink=false` opts out; the blink is disabled under `MATCHA_HEADLESS=1` stream mode. Adds `~key` support the element-level `createElement` never had. | ~105 lines |
+| `lib/Clickable.re` | `<Clickable onClick>` — click target sized to the box its parent allocated; innermost-under-pointer wins; wheel passes through unless `~onMouseDown` is given. | ~80 lines |
+| `lib/FrameDiff.re` | Pure line-diff between frames with ABSOLUTE addressing on a cleared screen. This is what paints **Fullscreen** (alternate-screen) mode; `Inline` mode paints via `LiveRegion` instead. | ~115 lines |
+| `lib/Terminal.re` | The only module doing real terminal I/O: raw mode (via a C stub, `terminal_stubs`), cursor show/hide, screen clear, terminal size, raw byte reads, bracketed-paste/kitty/mouse mode toggles. | ~200 lines |
+| `lib/Context.re` | React-style context: `create`/`provide`/`use`, plus the `Context.Make` functor for typed provider/consumer modules. | ~120 lines |
+| `lib/Matcha.re` + `lib/Matcha.rei` | Public API surface — re-exports the modules above plus convenience aliases (`flex`/`percent`/`chars`, color constructors, `useLayout`, `useStdout`, headless helpers). The `.rei` **pins** that surface: adding a `let` to `Matcha.re` alone does not export it, and removing one is a build error. Read these first when answering "does Matcha support X". | ~120 + ~285 lines |
+| `lib/Component.re`, `lib/Event.re` | Thin convenience re-exports of a subset of `Hooks` (`Component.useState`; `Event.useQuit`/`useKeyDown`/`useFocus`/`useFocusManager`/`useInput`/`useMouse`) used throughout the examples. | ~16/~28 lines |
+| `ppx/ppx_component.ml` | The `[@component]` PPX: rewrites JSX (`Module.createElement(~prop=v, ~children=[...], ())`) and expands `[@component] let make = (~a, ~b) => {...}` into a generated `props` record type, `make: props => Element.t`, and a labeled `createElement` that wraps the render in `Element.createComponent`. | ~430 lines |
+
+## Gotchas
+
+- **Component identity = tree path + ppx `typeId` + `key`.** Not render
+  order, not the `renderFn` pointer. `Runtime.componentPath` appends a
+  component's type ID (and `key`, if given) to its parent's path, and
+  `childPath` appends a stack child's index; the resulting string is mapped
+  to a stable `componentId` through the per-instance `componentIdRegistry`,
+  and that ID keys the hooks context. Because a path depends only on the tree
+  *above* a component, a conditional sibling appearing or disappearing does
+  not shift anyone else's state. Two components of the same type at the same
+  position are the same instance — that's what `key` is for.
+- **Effects commit once per frame, after the whole tree renders.** Rendering
+  a body only *schedules* effects onto its context (`useEffect` compares
+  deps) and queues that context (`Hooks.enqueueEffects`). `Hooks.commitEffects`
+  then drains the queue — children before parents, root last — and runs each
+  context's pending effects. The dep slot is written **at commit time, after
+  the effect ran**, never at schedule time: a component can render twice in
+  one frame (a stack measures an `Auto` child, then renders it for real), and
+  both passes must schedule the same effect so the frame commits it exactly
+  once. If you touch effect scheduling, preserve that ordering.
+- **Every visited component is always rendered; there is no output cache.**
+  A skipped render is not an optimization here, it's data loss: the skipped
+  subtree never reaches `recordRenderedComponent`, so
+  `Hooks.cleanupUnmountedComponents` treats those descendants as unmounted and
+  destroys their contexts. (A per-element `cachedOutput`/`stableIdRef` pair
+  used to exist and was removed for exactly this reason.) The `props` field on
+  `Element.Component` is still carried for a possible future memoization pass,
+  but nothing reads it today.
+- **Each `start`/`startHeadless` gets a fresh `Hooks.instanceState`; `quit()`
+  runs cleanups.** All per-application state (contexts, ID registry, ID
+  counter, root context, effect queue) lives in that record, so two apps
+  started in the same process — e.g. several headless handles in one test
+  run — can't see each other. Exactly one instance is in force at a time
+  (`Hooks.currentInstance`); each headless handle re-installs its own before
+  every operation. Interleaving instances across threads is unsupported. Don't
+  add new mutable app state at module level — put it in `instanceState`.
+- **`==`/`!=` vs `===`/`!==` — and why `Hooks.re` uses the physical ones.**
+  In Reason, `==`/`!=` are OCaml's structural `=`/`<>`; `===`/`!==` are
+  OCaml's physical `==`/`!=`. Two real bugs (`Hooks.depsEqual`, and the
+  now-removed `Hooks.propsChanged`) came from using structural comparison
+  on `Obj.t` values that can wrap closures — OCaml's structural `compare`
+  raises `Invalid_argument("compare: functional value")` when it hits a
+  function inside the compared value. Both were fixed to use `!==`
+  (physical inequality), which is safe for `Obj.t` (compares pointers for
+  heap values, values directly for immediates) and doesn't attempt to look
+  inside the value. **Do not use `Obj.magic` to `nativeint` for this either
+  — it segfaults on immediate values in OCaml 5** (this hazard has since been
+  removed from the identity path, which is now plain string paths, but the
+  rule still governs `depsEqual` and any new `Obj.t` comparison). If you're
+  comparing anything that might contain a closure (deps arrays, props,
+  cached callbacks), use `!==`/`===`, never `!=`/`==`.
+- **Slot hooks vs registration hooks — only slot hooks have the "no
+  conditionals" rule.** `useState`/`useEffect`/`useEffectAlways`/`useMemo`/
+  `useRef` (and the timers built on them) consume a numbered hook slot and
+  must run unconditionally, in the same order, every render. `useKeyDown`/
+  `useInput`/`useMouse`/`useFocus`/`useFocusManager`/`useQuit`/`useStdout`
+  are *registrations* re-collected from scratch each frame — calling them
+  conditionally is safe and idiomatic (that is how `~isActive` gating
+  works).
+- **The interactive loop renders INLINE by default; `quit(ClearScreen)`
+  erases only the live region.** In `Inline` mode there is no
+  `ESC[2J`/alt-screen: the app paints at the current cursor position via
+  relative movements (`LiveRegion.patch`, inside `ESC[?2026h/l` sync
+  guards), `<Static>`/`useStdout` output is committed above it into normal
+  scrollback, and quitting erases the region while leaving the transcript.
+  `Runtime.start(~screen=Fullscreen, ...)` is the other mode: alternate
+  screen, frame padded to the full viewport, painted absolutely through
+  `FrameDiff.diff`, no DSR/`bottomRow` tracking, `liveTop` fixed at 1, and
+  restore-by-leaving-the-alt-screen for both quit behaviors. Because the alt
+  screen has no scrollback, `<Static>` and `useStdout().write` **raise
+  `Invalid_argument` there** rather than silently dropping output — one
+  flag, `Hooks.instanceState.staticAllowed`, which `start` clears for
+  Fullscreen and both call sites check. Every fullscreen difference is
+  pattern-matched on the mode; Inline's bytes are unchanged. Headless
+  ignores `~screen` entirely and keeps `<Static>` working. Anything that
+  writes to stdout directly mid-run
+  corrupts the region — use `useStdout` for that. Raw mode disables ISIG
+  and IXON, so Ctrl+C/Ctrl+Z/Ctrl+S arrive as ordinary key events — an app
+  must bind its own quit key (every example does), and nothing kills the
+  process out from under the `at_exit` terminal restore.
+- **Byte-fed loops deliver one event per frame.** When one `read()` yields
+  several decoded events (fast typing, scripted stdin), `deliverAll`
+  re-renders between them (`~flushDirty`) so each handler closes over fresh
+  state — without this, two value-based `setState` keystrokes in one batch
+  clobber each other ("hi" becomes "i"). The headless *handle* path gets the
+  same guarantee by re-rendering inside every `sendKey`/`sendPaste`/
+  `sendMouse`. Preserve this if you touch either loop; the process-level
+  regression lives in `test/chat_tests.re` ("batched into one read").
+- **`<Static items renderItem>` is append-only, watermark-committed.** Each
+  Static node commits `items[watermark..]` once, on the frame that first
+  renders them, then never again — items are *output*, not live state: an
+  item's component mounts on its commit frame and unmounts on the next, so
+  it must not own ongoing state (spinners, subscriptions). Mutating or
+  reordering already-committed items does nothing. **Inline only**: under
+  `~screen=Fullscreen` both `<Static>` and `useStdout().write` raise
+  `Invalid_argument` (there is no scrollback on the alternate screen), so a
+  fullscreen app keeps its transcript in state and renders it — see
+  `examples/claude-code`. See `examples/static-demo`'s header comment for
+  the full inline contract.
+- **Tab is consumed by focus cycling only while at least one focusable is
+  registered.** `Hooks.dispatchKey` moves focus on Tab/Shift+Tab *before*
+  app key handlers and swallows the event — but only when `useFocus`
+  registrations exist, so a no-focus app still sees raw Tab. `useInput`
+  handlers fire regardless of focus unless gated with
+  `~isActive=isFocused` (the standard idiom — see `test/focus_tests.re`).
+- **Wheel events route by wheel *interest*, not plain innermost-wins.**
+  `dispatchMouse` sends ScrollUp/ScrollDown to the innermost containing
+  component whose `useMouse` declared wheel interest (`~wheel`, default
+  `true`); `<Clickable>` without `~onMouseDown` opts out, so wheel over a
+  clickable row inside a `<ScrollView>` scrolls the list. All other mouse
+  events go to the innermost component with any handler; there is no
+  bubbling.
+- **The `[@component]` PPX only runs over `test/` and `examples/`, not
+  `lib/` itself.** Check any `dune` file's `(preprocess (pps
+  ppx_component))` stanza before assuming JSX/`[@component]` works in a
+  given directory; `lib/dune` has no such stanza, so `lib/Element.re`'s
+  `Text`/`VStack`/etc. modules are hand-written in the expanded form the PPX
+  would otherwise generate (`type props`, `make`, `createElement`).
+- **The README can lag reality; `lib/Matcha.rei` is the API source of
+  truth.** It's short and odoc-commented — read it before trusting prose docs
+  (including this file) about what's exported, and edit it (together with
+  `Matcha.re`) when you deliberately change the public surface. Notably,
+  `Element.Fragment` exists but is *not* re-exported at the top level (it's
+  still reachable as `Matcha.Element.Fragment`).

@@ -1,5 +1,6 @@
 # Dune
 _build/
+_opam/
 *.install
 
 # OCaml
@@ -20,7 +21,8 @@ _build/
 *~
 .vscode/
 .idea/
-.claude/
+.claude/*
+!.claude/skills/
 
 # OS
 .DS_Store

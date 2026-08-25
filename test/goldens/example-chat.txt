@@ -1,0 +1,8 @@
+* ready
+Type a message... (Enter to send)                         Context
+                                                            lib/Runtime.re     █
+                                                            lib/Hooks.re       █
+                                                            lib/Element.re     █
+                                                            lib/Key.re         │
+                                                            lib/ScrollView.re  │
+Enter: send   Tab: focus context   click: pin   Ctrl+C: quit

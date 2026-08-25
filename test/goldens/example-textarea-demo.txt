@@ -1,0 +1,15 @@
+TextArea Demo - Press ESC to quit
+Cmd+Enter to submit
+
+Hello, world!
+This is a multi-line text editor.
+
+Try these shortcuts:
+- Arrow keys to move
+- Cmd+Arrow to jump to line/doc boundaries
+- Alt+Arrow to move by word
+- Shift+Arrow to select
+- Cmd+Enter to submit
+- Enter for new line
+
+Cursor: (0, 0)

@@ -1,0 +1,24 @@
+Scroll demo - 30 rows, one small window
+ 1. row number 1 of thirty                                                     █
+ 2. row number 2 of thirty                                                     █
+ 3. row number 3 of thirty                                                     █
+ 4. row number 4 of thirty                                                     █
+ 5. row number 5 of thirty                                                     █
+ 6. row number 6 of thirty                                                     █
+ 7. row number 7 of thirty                                                     █
+ 8. row number 8 of thirty                                                     █
+ 9. row number 9 of thirty                                                     █
+10. row number 10 of thirty                                                    █
+11. row number 11 of thirty                                                    █
+12. row number 12 of thirty                                                    █
+13. row number 13 of thirty                                                    █
+14. row number 14 of thirty                                                    █
+15. row number 15 of thirty                                                    █
+16. row number 16 of thirty                                                    █
+17. row number 17 of thirty                                                    │
+18. row number 18 of thirty                                                    │
+19. row number 19 of thirty                                                    │
+20. row number 20 of thirty                                                    │
+21. row number 21 of thirty                                                    │
+22. row number 22 of thirty                                                    │
+up/down  pgup/pgdn  home/end  wheel   q: Quit
