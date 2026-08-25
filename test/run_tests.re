@@ -23,6 +23,8 @@ let () = {
   Mock_tests.run();
   Hooks_regression_tests.run();
   Golden_tests.run();
+  Vterm_tests.run();
+  Pty_tests.run();
   Framediff_tests.run();
   Repro_tests.run();
   Timer_tests.run();

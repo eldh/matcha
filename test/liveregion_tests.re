@@ -12,6 +12,12 @@
  * - relative addressing only (no ESC[<row>;<col>H, no ESC[2J anywhere), and
  * - the cursor ends at column 1 of the LAST live line (every non-empty patch
  *   finishes with "\r" after walking down to that line).
+ *
+ * THE PAIRING RULE applies here in full: byte-exact expectations encode a
+ * model of terminal behaviour and must always be paired with a grid
+ * assertion. The rule is written out once, in the header of
+ * test/framediff_tests.re - read it there. The paired half of this file is
+ * the "Grid (Vterm)" group at the bottom.
  */
 open Matcha;
 
@@ -346,6 +352,259 @@ let run = () =>
         "\r" ++ up(9) ++ ej,
         "a region taller than the screen was clamped when painted, so the "
         ++ "erase is clamped too",
+      );
+    });
+
+    /* ========================================================================
+     * Grid (Vterm) - the paired half of every byte test above.
+     *
+     * See THE PAIRING RULE in the header of test/framediff_tests.re. These
+     * feed the REAL LiveRegion output to the independent terminal model in
+     * test/vterm.re and assert on the screen.
+     *
+     * SETUP NOTE. Inline rendering is relative to wherever the cursor
+     * already is, so every case has to place the vterm's cursor first,
+     * exactly as a shell would have left it. `atRow` does that with an
+     * absolute CUP - the only absolute addressing in this file, and it is
+     * the harness placing the cursor, never LiveRegion.
+     * ====================================================================== */
+
+    /* A screen with the cursor parked at column 1 of screen row `row`
+     * (1-based), which is where the interactive loop starts painting. */
+    let atRow = (~width: int, ~height: int, ~row: int): Vterm.t => {
+      let vt = Vterm.create(~width, ~height);
+      Vterm.feed(vt, "\027[" ++ string_of_int(row) ++ ";1H");
+      vt;
+    };
+
+    Test.run("full-width live rows keep their LAST column on the screen", () => {
+      /* Same bug class as the FrameDiff pairing: painting a row that spans
+         the full width leaves the cursor in the PENDING-WRAP state, ON the
+         last column, so an EL emitted AFTER the content would erase the
+         cell just painted. This fails against a `content ++ ESC[0m ESC[K`
+         ordering and passes with LiveRegion's clear-first form. */
+      let width = 20;
+      let top = "+" ++ String.make(width - 2, '-') ++ "+";
+      let mid = "|" ++ String.make(width - 2, ' ') ++ "|";
+      let vt = atRow(~width, ~height=6, ~row=1);
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=None,
+          ~staticLines=[],
+          ~next=[|top, mid, top|],
+          ~termHeight=6,
+        ),
+      );
+      Test.assertEqualStr(
+        Vterm.cellGlyph(vt, ~row=0, ~col=width - 1),
+        "+",
+        "top border's right corner survived",
+      );
+      Test.assertEqualStr(
+        Vterm.cellGlyph(vt, ~row=1, ~col=width - 1),
+        "|",
+        "middle row's right border survived",
+      );
+      Test.assertEqualStr(Vterm.row(vt, 2), top, "bottom border is exact");
+      /* And the region did not spill onto a fourth row: a full-width line
+         must NOT auto-wrap, because the "\r\n" after it consumes the
+         deferred wrap instead of taking it. */
+      Test.assertEqualStr(Vterm.row(vt, 3), String.make(width, ' '), "no spill");
+    });
+
+    Test.run("patching frame A into frame B leaves EXACTLY B on screen", () => {
+      let vt = atRow(~width=16, ~height=6, ~row=1);
+      let a = [|"alpha", "bravo", "charlie"|];
+      let b = [|"alpha", "BRAVO!", "charlie"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(~prev=None, ~staticLines=[], ~next=a, ~termHeight=6),
+      );
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=Some(a),
+          ~staticLines=[],
+          ~next=b,
+          ~termHeight=6,
+        ),
+      );
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "alpha\nBRAVO!\ncharlie\n\n\n",
+        "only row 1 changed and no residue of the old row is left",
+      );
+      Test.assertEqual(
+        Vterm.cursor(vt),
+        (2, 0),
+        "the invariant holds on the real screen: column 1 of the last live "
+        ++ "line",
+      );
+    });
+
+    Test.run("a shrinking region leaves no stale tail on the grid", () => {
+      let vt = atRow(~width=16, ~height=6, ~row=1);
+      let a = [|"one", "two", "three"|];
+      let b = [|"one", "two"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(~prev=None, ~staticLines=[], ~next=a, ~termHeight=6),
+      );
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=Some(a),
+          ~staticLines=[],
+          ~next=b,
+          ~termHeight=6,
+        ),
+      );
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "one\ntwo\n\n\n\n",
+        "the third row was erased",
+      );
+      Test.assertEqual(Vterm.cursor(vt), (1, 0), "cursor back on the new last row");
+    });
+
+    Test.run("static lines end up ABOVE the live region", () => {
+      let vt = atRow(~width=16, ~height=6, ~row=1);
+      let a = [|"live-1", "live-2"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(~prev=None, ~staticLines=[], ~next=a, ~termHeight=6),
+      );
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=Some(a),
+          ~staticLines=["committed A", "committed B"],
+          ~next=[|"live-1", "live-2"|],
+          ~termHeight=6,
+        ),
+      );
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "committed A\ncommitted B\nlive-1\nlive-2\n\n",
+        "the statics are printed where the region was and the region moved "
+        ++ "down below them",
+      );
+      Test.assertEqual(Vterm.scrollback(vt), [], "nothing scrolled yet");
+    });
+
+    Test.run(
+      "at the bottom row, commits scroll the screen into the scrollback", () => {
+      /* SETUP: the screen already has a transcript line at the top, and the
+         cursor is parked on the LAST screen row - which is where an app
+         launched from a shell prompt actually starts. From there the "\r\n"
+         LiveRegion uses to step down CANNOT move down: it SCROLLS. That
+         scroll is the mechanism by which the terminal's own scrollback
+         swallows what leaves the top of the screen and committed <Static>
+         output climbs out of the live region. ESC[B could not do any of
+         this, which is why LiveRegion never uses it.
+
+         Each patch below commits one static line, so each patch scrolls the
+         screen by exactly one row. */
+      let height = 4;
+      let width = 16;
+      let vt = Vterm.create(~width, ~height);
+      Vterm.feed(vt, "\027[1;1Hold-top");
+      Vterm.feed(vt, "\027[" ++ string_of_int(height) ++ ";1H");
+
+      let live = [|"live"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=None,
+          ~staticLines=[],
+          ~next=live,
+          ~termHeight=height,
+        ),
+      );
+      Test.assertEqualStr(
+        Vterm.row(vt, height - 1),
+        "live" ++ String.make(width - 4, ' '),
+        "the live region sits on the bottom row",
+      );
+      Test.assertEqual(Vterm.scrollback(vt), [], "nothing has scrolled yet");
+
+      let commit = (s: string) =>
+        Vterm.feed(
+          vt,
+          LiveRegion.patch(
+            ~prev=Some(live),
+            ~staticLines=[s],
+            ~next=live,
+            ~termHeight=height,
+          ),
+        );
+      commit("s1");
+      Test.assertContains(
+        Vterm.scrollbackText(vt),
+        "old-top",
+        "the first commit scrolled the pre-existing top line off the screen",
+      );
+      commit("s2");
+      commit("s3");
+      commit("s4");
+
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "s2\ns3\ns4\nlive",
+        "committed lines climb up above the live region, which stays pinned "
+        ++ "to the bottom row",
+      );
+      Test.assertContains(
+        Vterm.scrollbackText(vt),
+        "s1",
+        "and the earliest commit has scrolled into the scrollback, where "
+        ++ "<Static> content is supposed to end up",
+      );
+      Test.assertTrue(
+        !Test.contains(Vterm.text(vt), "s1"),
+        "s1 is scrollback now, not screen",
+      );
+    });
+
+    Test.run("erase() removes the region's rows from the grid", () => {
+      let vt = atRow(~width=16, ~height=6, ~row=2);
+      Vterm.feed(vt, "\027[1;1Hkeep this\027[2;1H");
+      let a = [|"r0", "r1", "r2"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(~prev=None, ~staticLines=[], ~next=a, ~termHeight=6),
+      );
+      Test.assertContains(Vterm.text(vt), "r2", "region painted");
+      Vterm.feed(vt, LiveRegion.erase(~prevHeight=3, ~termHeight=6));
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "keep this\n\n\n\n\n",
+        "only the live region was erased - the transcript above it stays",
+      );
+    });
+
+    Test.run("LiveRegion emits nothing the terminal model does not know", () => {
+      let vt = atRow(~width=20, ~height=8, ~row=1);
+      let a = [|"a", "b", "c"|];
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(~prev=None, ~staticLines=["s"], ~next=a, ~termHeight=8),
+      );
+      Vterm.feed(
+        vt,
+        LiveRegion.patch(
+          ~prev=Some(a),
+          ~staticLines=[],
+          ~next=[|"a", "z", "c"|],
+          ~termHeight=8,
+        ),
+      );
+      Vterm.feed(vt, LiveRegion.erase(~prevHeight=3, ~termHeight=8));
+      Test.assertEqual(
+        Vterm.unknownSeqs(vt),
+        [],
+        "every sequence LiveRegion writes is one Vterm implements",
       );
     });
   });

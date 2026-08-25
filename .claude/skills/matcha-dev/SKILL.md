@@ -299,6 +299,78 @@ UPDATE_GOLDENS=1 dune exec test/run_tests.exe
 Then read `git diff test/goldens/` and confirm every changed frame is a
 change you meant to make.
 
+## Terminal-truth tests: `test/vterm.re` and `test/pty.re`
+
+Everything above sees **frame text**. Nothing above sees what a terminal
+does with the escape bytes that carry it, and nothing above touches the TTY.
+Two layers close that gap.
+
+### Which layer to reach for
+
+| You changed… | Reach for |
+|---|---|
+| component logic, hooks, layout math, element utilities | headless handle (`Runtime.startHeadless`) |
+| what a frame looks like | goldens |
+| a **painter** (`lib/FrameDiff.re`, `lib/LiveRegion.re`) or anything that emits escape bytes | byte test **plus** a Vterm grid assertion |
+| `lib/Terminal.re`, raw mode, signal handling, mode enter/exit, resize, quit/restore, input batching | a `test/pty_tests.re` case |
+
+- **Vterm** (`test/vterm.re`) is a screen grid fed raw bytes: cursor,
+  deferred wrap, EL/ED erasure, scrollback, alternate screen, SGR per cell,
+  DEC modes, DSR. Readers: `Vterm.row/snapshot/text/scrollback/fullText`,
+  `cellGlyph`, `cellSgr`, `cursor`, `pendingWrap`, `inAltScreen`,
+  `unknownSeqs`. Its own unit tests are `test/vterm_tests.re`.
+- **Pty** (`test/pty.re` + `test/pty_stubs.c`) runs a real example binary on
+  a real pseudo-terminal, with a Vterm attached to the master.
+
+### The two rules that made these layers necessary
+
+1. **Pairing rule.** A byte-exact painter expectation must always be paired
+   with a Vterm grid assertion. A byte test only says "the writer still
+   emits what its author believed was right" — it bakes a *model* of
+   terminal behaviour into the assertion and pins that model true or false.
+   The painters once emitted `content ++ ESC[0m ESC[K` per row: frames were
+   correct, byte tests were green, and every full-width row silently lost
+   its last cell on a real terminal, because printing into the last column
+   leaves the cursor *on* that column (deferred wrap) and the EL then erases
+   it. Rule written out in full in `test/framediff_tests.re`'s header.
+2. **Non-default-size rule.** Any test touching sizing, wrapping, flex,
+   truncation or resize must run at least one **non-80x24** size. 80x24 is
+   simultaneously the constraints default, the headless-config default and
+   the `caml_get_terminal_size` non-TTY fallback, so at that size a stale
+   or defaulted value is indistinguishable from a computed one. See
+   "coincidence defaults" in `/CLAUDE.md`.
+
+Vterm is written from xterm semantics, deliberately **not** from reading
+Matcha's painters. If the model and a painter disagree, that is a finding to
+investigate — never adjust the model until the painter's output looks right.
+
+### `Pty` usage sketch
+
+```reason
+Pty.withSession(~width=100, ~height=30, "examples/chat/main.exe", [], s => {
+  Pty.drain(~quietMs=250, ~timeoutMs=5000, s);          /* poll till quiet */
+  Test.assertContains(Pty.screen(s), "Context", "panel painted");
+  Pty.send(s, "hi\r");                                   /* ONE write = batched */
+  Pty.drain(s);
+  Pty.resize(s, ~width=120, ~height=40);                 /* real SIGWINCH */
+  Pty.drain(s);
+  Pty.send(s, "\003");
+  switch (Pty.waitExit(s)) {
+  | Pty.Exited(0) => ()
+  | other => Test.assertTrue(false, Pty.exitStatusToString(other))
+  };
+});
+```
+
+`withSession` kills and reaps in a `Fun.protect` finaliser, so a failing
+assertion cannot leak a child sitting in raw mode — always use it. `drain`
+polls until the child has been quiet for `quietMs` and auto-answers DSR
+(`ESC[6n`) from the Vterm's cursor, so inline startup's cursor tracking runs
+for real; **never assert after a bare sleep.** An exit reported as
+`Signaled(n)` rather than `Exited(0)` is the ISIG bug class: the key reached
+the kernel instead of the application, and the terminal restore never ran.
+Keep this suite to a handful of cases — it is by far the slowest layer.
+
 ## The `==`/`!=` vs `===`/`!==` rule (exact failure mode)
 
 In Reason, `==`/`!=` are OCaml's **structural** `=`/`<>`; `===`/`!==` are

@@ -577,6 +577,18 @@ clicks — see `test/chat_tests.re`, which drives the `examples/chat` app, and
 `test/input.re` for helpers (`feedBytes`, `feedPaste`, `clickAt`,
 `pressTab`) that simulate real terminal byte streams end to end.
 
+Headless mode answers "does the app render and behave correctly", but not
+"does a terminal display that correctly" — for that the suite has two more
+layers, worth knowing about if you contribute to rendering or terminal code.
+`test/vterm.re` is a small VT/xterm screen model (cursor, deferred wrap,
+erasure, scrollback, alternate screen, SGR per cell): painter output is fed
+to it and assertions are made on the resulting **grid**, which is how
+full-width rows are checked to keep their last column. `test/pty.re` runs a
+real example binary on a real pseudo-terminal, so raw mode, Ctrl+C reaching
+the application rather than the kernel, alternate-screen enter/exit, a real
+SIGWINCH resize and the exit restore sequence are all covered by
+`dune runtest` too. See `CLAUDE.md` for when each layer applies.
+
 ## Examples
 
 All examples live under `examples/` and build as separate dune executables.

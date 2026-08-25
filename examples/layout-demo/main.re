@@ -13,7 +13,10 @@ module Section = {
     /* Top border with label */
     let labelText = " " ++ label ++ " ";
     let labelLen = visibleLength(labelText);
-    let remainingWidth = max(0, innerWidth - labelLen - 1);
+    /* corner + label + horizontals + corner must sum to the full width:
+       horizontals = innerWidth - labelLen (no extra -1, which used to leave
+       every titled top border one column short of the other rows). */
+    let remainingWidth = max(0, innerWidth - labelLen);
     let topBorder =
       BoxChars.topLeft
       ++ labelText

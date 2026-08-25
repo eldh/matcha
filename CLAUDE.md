@@ -62,6 +62,32 @@ underlying unused code instead.
    This prints each rendered frame to stdout and reads keys from stdin until
    EOF. It is not a substitute for `dune runtest` — use it to eyeball that an
    example still renders and responds to input, not as your only check.
+4. **Terminal-truth tests — `test/vterm.re` (a screen model) and
+   `test/pty.re` (a real pseudo-terminal).** Steps 1–3 all see *frame text*.
+   Neither sees what a terminal does with the escape bytes that carry that
+   text, and neither touches the TTY layer at all. Five real bugs hid in
+   exactly that gap, including one where every full-width row silently lost
+   its last cell while the frames and the byte-exact tests were all
+   "correct".
+
+   | Layer | Sees | Cannot see |
+   |---|---|---|
+   | headless handle (`Runtime.startHeadless`) | component logic, hooks, layout, frame text | anything about escape bytes, the terminal, or the process |
+   | Vterm grid (`test/vterm.re`, fed painter output) | what a terminal would *display* — wrapping, erasure, scrollback, alt screen, SGR per cell | termios, signals, timing, real input |
+   | PTY session (`test/pty.re`, runs the real binary) | raw mode/ISIG, DSR round trip, mode switching, SIGWINCH, batched reads, exit-by-signal, the restore sequence | nothing above it — but it is the slowest layer, so keep it to a handful of cases |
+
+   **PAIRING RULE: a byte-exact painter expectation must always be paired
+   with a Vterm grid assertion.** A byte test only says "the writer still
+   emits what its author believed was right" — it encodes a *model* of
+   terminal behaviour inside the assertion, and pins that model whether or
+   not it is true. The grid assertion is the independent check on the model.
+   The rule is written out in full in the header of
+   `test/framediff_tests.re`; the paired groups live at the bottom of that
+   file and of `test/liveregion_tests.re`.
+
+   Vterm is written from xterm semantics, deliberately **not** from reading
+   Matcha's painters. If the model and a painter disagree, that disagreement
+   is a finding — never "fix" the model until the painter looks right.
 
 **HANG TRAP: never run an example without `MATCHA_HEADLESS=1`.** Without it,
 `Runtime.start` puts the terminal in raw mode and blocks waiting for a real
@@ -72,6 +98,13 @@ TTY/keyboard — it will hang the calling process/agent indefinitely.
 closed or redirected. Always combine `timeout N`, `MATCHA_HEADLESS=1`, and
 `< /dev/null` (or a pipe that eventually closes) together, exactly as in the
 verification-loop command above.
+
+**The ONE exception is `test/pty.re`**, which runs a binary on a real pty
+*without* `MATCHA_HEADLESS` on purpose — that is the whole point of the
+layer. It is safe only because every session goes through `Pty.withSession`,
+which kills and reaps the child in a `Fun.protect` finaliser, and because
+`Pty.drain` polls with a hard timeout instead of blocking. Never spawn a
+session outside `withSession`, and never wait on a child with a bare sleep.
 
 ## Architecture map
 
@@ -214,6 +247,19 @@ verification-loop command above.
   given directory; `lib/dune` has no such stanza, so `lib/Element.re`'s
   `Text`/`VStack`/etc. modules are hand-written in the expanded form the PPX
   would otherwise generate (`type props`, `make`, `createElement`).
+- **Coincidence defaults: never test layout at 80x24 only.** A test whose
+  size happens to equal the codebase's fallback value cannot tell a computed
+  value from a defaulted one. `Runtime`'s constraints default to 80x24,
+  `getHeadlessConfigFromEnv` defaults to 80x24, and
+  `caml_get_terminal_size`'s non-TTY fallback is 80x24 — so a stale-state
+  bug that leaves the root's `useLayout()` reading the *default* constraints
+  instead of the current frame's is completely invisible to an 80x24 test.
+  That is exactly how the root-`useLayout` stale-constraints bug survived:
+  the buggy fallback and the test default were the same numbers. Any test
+  that touches sizing, wrapping, flex distribution, truncation or resize
+  must run at least one **non-default** size (the PTY resize case uses
+  100x30, the golden components use 40x16/40x10/40x8). A size assertion that
+  reads "80" is not evidence unless something in the test made it 80.
 - **The README can lag reality; `lib/Matcha.rei` is the API source of
   truth.** It's short and odoc-commented — read it before trusting prose docs
   (including this file) about what's exported, and edit it (together with

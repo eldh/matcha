@@ -13,6 +13,10 @@
   hooks_regression_tests
   golden
   golden_tests
+  vterm
+  vterm_tests
+  pty
+  pty_tests
   framediff_tests
   input
   key_tests
@@ -33,6 +37,12 @@
   chat_tests
   claudecode_tests)
  (libraries matcha test unix chatApp claudeCodeApp)
+ ; Real-PTY harness (test/pty.re). posix_openpt + fork + execve, so the
+ ; end-to-end suite can drive an example binary on an actual terminal -
+ ; termios, SIGWINCH, mode switching and exit-by-signal all become visible.
+ (foreign_stubs
+  (language c)
+  (names pty_stubs))
  (deps
   (universe) ; Always re-run, don't cache
   (glob_files goldens/*.txt)

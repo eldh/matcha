@@ -4,6 +4,33 @@
  * FrameDiff.diff is pure (no I/O), so it's tested directly against expected
  * escape-sequence output rather than through a real terminal or PTY.
  *
+ * ============================================================================
+ * THE PAIRING RULE (referenced from test/liveregion_tests.re)
+ * ============================================================================
+ *
+ * A byte-exact expectation is not a test of what the terminal DISPLAYS. It
+ * is a test that the writer still emits the bytes the test author believed
+ * were right - which encodes a MODEL of terminal behaviour inside the
+ * assertion. When that model is wrong, the byte test cheerfully pins the
+ * wrong bytes forever.
+ *
+ * That is not hypothetical: the painters used to emit
+ * `content ++ ESC[0m ESC[K` per row. Every byte test agreed with the code,
+ * every rendered frame's TEXT was correct, and the suite was green - while
+ * on a real terminal every full-width row silently lost its last cell,
+ * because printing into the last column leaves the cursor ON that column
+ * (deferred wrap) and the EL then erases it. A human looking at a
+ * screenshot found it; 531 tests did not.
+ *
+ * RULE: every byte-exact painter expectation must be PAIRED with a grid
+ * assertion - the same painter output fed through test/vterm.re (an
+ * independent xterm-semantics screen model) with the assertion made on the
+ * resulting SCREEN. The byte tests say "the writer did not change"; the
+ * grid tests say "the terminal shows the right thing". Neither is
+ * sufficient alone.
+ *
+ * See the "Grid (Vterm)" group at the bottom of this file and of
+ * test/liveregion_tests.re.
  */
 
 open Matcha;
@@ -182,6 +209,147 @@ let run = () =>
       Test.assertTrue(
         !Test.contains(result, "new\027[0m\027[K"),
         "and no erase trails the painted content",
+      );
+    });
+
+    /* ========================================================================
+     * Grid (Vterm) - the paired half of every byte test above.
+     *
+     * See THE PAIRING RULE in this file's header. These drive the REAL
+     * FrameDiff output through the independent terminal model in
+     * test/vterm.re and assert on the screen it produces.
+     * ====================================================================== */
+
+    /* Paint a sequence of frames into a fresh screen of the given size,
+     * exactly as Runtime's Fullscreen path does: first frame with
+     * prev=None, each later frame diffed against the one before. */
+    let paintFrames =
+        (~width: int, ~height: int, frames: list(array(string))): Vterm.t => {
+      let vt = Vterm.create(~width, ~height);
+      let prev = ref(None);
+      List.iter(
+        next => {
+          Vterm.feed(vt, FrameDiff.diff(~prev=prev^, ~next));
+          prev := Some(next);
+        },
+        frames,
+      );
+      vt;
+    };
+
+    Test.run("full-width rows keep their LAST column on the screen", () => {
+      /* THIS TEST FAILS against the pre-fix `content ++ ESC[0m ESC[K`
+         ordering, and passes with the clear-first form the module uses now.
+         It is the machine-checkable statement of the bug a human had to
+         catch in a screenshot: a row that spans the full terminal width
+         leaves the cursor in the PENDING-WRAP state, still on the last
+         column, so a trailing EL erases the cell just painted - the right
+         border of the fullscreen input box, a scrollbar glyph, a box
+         corner. Reorder FrameDiff.paintLine and watch this go red. */
+      let width = 20;
+      let border = "|" ++ String.make(width - 2, '-') ++ "|";
+      let body = "|" ++ String.make(width - 2, ' ') ++ "|";
+      let frame = [|border, body, border, ""|];
+      let vt = paintFrames(~width, ~height=4, [frame]);
+      Test.assertEqualStr(
+        Vterm.cellGlyph(vt, ~row=0, ~col=width - 1),
+        "|",
+        "row 0's right border survived",
+      );
+      Test.assertEqualStr(
+        Vterm.cellGlyph(vt, ~row=1, ~col=width - 1),
+        "|",
+        "row 1's right border survived",
+      );
+      Test.assertEqualStr(
+        Vterm.cellGlyph(vt, ~row=2, ~col=width - 1),
+        "|",
+        "row 2's right border survived",
+      );
+      Test.assertEqualStr(
+        Vterm.row(vt, 0),
+        border,
+        "and the whole row matches, character for character",
+      );
+    });
+
+    Test.run("a first paint puts EXACTLY the frame on the screen", () => {
+      /* prev=None opens with ESC[2J ESC[H. Nothing may survive it, and
+         nothing beyond the frame may appear. */
+      let vt =
+        Vterm.create(~width=12, ~height=4);
+      Vterm.feed(vt, "stale stale\r\nstale stale\r\nstale stale");
+      let frame = [|"alpha", "beta", "gamma", "delta"|];
+      Vterm.feed(vt, FrameDiff.diff(~prev=None, ~next=frame));
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "alpha\nbeta\ngamma\ndelta",
+        "the clear wiped the old contents and the frame is all that is left",
+      );
+    });
+
+    Test.run("a shrinking frame leaves no stale tail on the grid", () => {
+      let vt =
+        paintFrames(
+          ~width=12,
+          ~height=5,
+          [
+            [|"one", "two", "three", "four"|],
+            [|"one", "two"|],
+          ],
+        );
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "one\ntwo\n\n\n",
+        "rows 3 and 4 were erased, not left showing the taller frame",
+      );
+    });
+
+    Test.run("a changed row is the ONLY row the screen changes", () => {
+      let vt =
+        paintFrames(
+          ~width=12,
+          ~height=4,
+          [[|"aaa", "bbb", "ccc", "ddd"|], [|"aaa", "XXX", "ccc", "ddd"|]],
+        );
+      Test.assertEqualStr(
+        Vterm.text(vt),
+        "aaa\nXXX\nccc\nddd",
+        "in-place repaint of one row",
+      );
+    });
+
+    Test.run("a full-width row shrinking to a short one clears the tail", () => {
+      let width = 16;
+      let vt =
+        paintFrames(
+          ~width,
+          ~height=2,
+          [[|String.make(width, '#'), "x"|], [|"ok", "x"|]],
+        );
+      Test.assertEqualStr(
+        Vterm.row(vt, 0),
+        "ok" ++ String.make(width - 2, ' '),
+        "the erase-before-content form still clears a longer previous row",
+      );
+    });
+
+    Test.run("FrameDiff emits nothing the terminal model does not know", () => {
+      let vt =
+        paintFrames(
+          ~width=20,
+          ~height=4,
+          [
+            [|"a", "b", "c", "d"|],
+            [|"a", "changed", "c", "d"|],
+            [|"a"|],
+            [|"a", "b", "c", "d"|],
+          ],
+        );
+      Test.assertEqual(
+        Vterm.unknownSeqs(vt),
+        [],
+        "every sequence FrameDiff writes is one Vterm implements",
       );
     });
   });

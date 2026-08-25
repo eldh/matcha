@@ -188,62 +188,39 @@ let run = () =>
 
     /* nested-components and layout-demo call Terminal.getSize() directly
      * (bypassing the headless-aware MATCHA_WIDTH/MATCHA_HEIGHT constraints)
-     * to display the raw terminal size. Terminal.getSize's C stub
-     * (caml_get_terminal_size in lib/terminal_stubs.c) calls
-     * ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) but never checks its return
-     * value, so when stdout is not a TTY (as it is here - we pipe the
-     * child's stdout to capture it) the ioctl fails and `w` is read back
-     * uninitialized: the "terminal size" in these frames is stack garbage
-     * that differs on every run. Confirmed by running each example twice
-     * and observing different WxH each time. That makes an exact golden
-     * match for their full output inherently flaky, so we only assert on
-     * the surrounding text that doesn't depend on that reading. */
-    Test.run("example: nested-components (stable text)", () => {
-      let output = Golden.runExample("nested-components");
-      Test.assertContains(
-        output,
-        "=== Nested Components Example ===",
-        "header renders",
-      );
-      Test.assertContains(output, "Hello, World!", "first greeting renders");
-      Test.assertContains(output, "Hello, ReasonML!", "second greeting renders");
-      Test.assertContains(output, "Press Q to quit.", "footer renders");
-    });
-
-    Test.run("example: layout-demo (stable text)", () => {
-      let output = Golden.runExample("layout-demo");
-      Test.assertContains(output, "Layout Demo - Terminal:", "title renders");
-      Test.assertContains(output, "Press Q to quit", "title renders");
-      Test.assertContains(
-        output,
-        "80x5 allocated",
-        "fixed Chars(5) section reports its allocated size",
-      );
-      Test.assertContains(
-        output,
-        "Percent(30) - 30% of parent",
-        "percent section label renders",
-      );
-      Test.assertContains(
-        output,
-        "Flex(2) - 2x flex share",
-        "flex(2) section label renders",
-      );
-      Test.assertContains(
-        output,
-        "Flex(1) - 1x flex share",
-        "flex(1) section label renders",
-      );
-    });
+     * to display and lay out against the RAW terminal size.
+     *
+     * These two used to be substring assertions rather than goldens, for a
+     * real reason: caml_get_terminal_size in lib/terminal_stubs.c called
+     * ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) without checking its return
+     * value, so with stdout on a pipe (which is how these run - we capture
+     * the child's output) the ioctl failed and `w` was read back
+     * UNINITIALIZED. The reported "terminal size" was stack garbage that
+     * differed run to run, which made both frames nondeterministic and an
+     * exact golden impossible.
+     *
+     * The stub now checks the ioctl and falls back to a standard 80x24, so
+     * these frames are byte-for-byte reproducible and they are exact
+     * goldens like every other example. Verified by running each binary
+     * three times and comparing checksums before converting them.
+     *
+     * If one of these goldens ever starts flapping again, suspect the stub
+     * first: a size read that is not deterministic under a pipe is the
+     * failure mode this comment is a monument to. */
+    Test.run("example: nested-components", () =>
+      Golden.checkExample("nested-components")
+    );
+    Test.run("example: layout-demo", () => Golden.checkExample("layout-demo"));
 
     /* people-list also goes through TerminalContext -> Terminal.getSize(),
-     * but here the garbage width/height feed directly into SplitView's
-     * layout math (line widths and row counts), not just a text label -
-     * so a garbage reading can blow the whole frame up to hundreds of MB
-     * of padding. Golden.runExample's byte cap keeps this bounded, but an
-     * exact golden match is still impossible (nondeterministic) and
-     * undesirable (huge file), so we only assert on the deterministic,
-     * layout-size-independent text near the start of the frame. */
+     * and its width/height feed directly into SplitView's layout math (line
+     * widths and row counts) rather than into a text label - so back when
+     * the stub returned garbage, a bad reading could blow the frame up to
+     * hundreds of MB of padding (Golden.runExample's byte cap exists for
+     * that). It is deterministic now too, but its assertions are left as
+     * stable substrings deliberately: what this case is for is that the
+     * split view populates and selects a row, not the exact padding of a
+     * wide frame. */
     Test.run("example: people-list (stable text)", () => {
       let output = Golden.runExample("people-list");
       Test.assertContains(
