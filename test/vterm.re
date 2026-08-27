@@ -80,6 +80,28 @@ type t = {
   mutable sgr: list(int),
   /* Cursor saved by ESC[?1049h, restored by ESC[?1049l. */
   mutable savedCursor: (int, int),
+  /* KITTY KEYBOARD PROTOCOL FLAG STACKS - ONE PER SCREEN BUFFER.
+   *
+   * kitty, Ghostty and recent iTerm2 keep the keyboard-mode stack
+   * SEPARATELY for the main and the alternate screen, exactly as modelled
+   * here. That per-screen split is not an implementation detail: it is the
+   * whole cause of the bug this model exists to catch - a push done on the
+   * main screen, an alt-screen switch, then a single pop, which lands on
+   * the ALT screen's stack and leaves the main one pushed forever.
+   *
+   * `ESC[>Nu` pushes N onto the CURRENT screen's stack; `ESC[<u` (or
+   * `ESC[<Nu`) pops N entries, CLAMPED - popping an empty stack is a
+   * harmless no-op per the kitty spec, which is what makes an
+   * unconditional double pop on exit safe.
+   *
+   * CHOICE (per the module header): the alt screen's stack is RESET when
+   * the alt screen is ENTERED, not when it is left. kitty clears the
+   * alternate screen's keyboard state along with the buffer on entry, and
+   * entry-reset is also the conservative model: it cannot hide a missing
+   * pop, only ever surface one. Most stacks here are depth 0 or 1, so the
+   * distinction only matters for a writer that pushes twice. */
+  mutable kittyMain: list(int),
+  mutable kittyAlt: list(int),
   /* Lines that scrolled off the top of the PRIMARY buffer, most recent
    * first. The alternate screen has no scrollback: rows scrolled off it are
    * discarded, exactly as on a real terminal. */
@@ -125,6 +147,8 @@ let create = (~width: int, ~height: int): t => {
     pendingWrap: false,
     sgr: [],
     savedCursor: (0, 0),
+    kittyMain: [],
+    kittyAlt: [],
     scrollbackRev: [],
     cursorVisible: true,
     bracketedPaste: false,
@@ -373,6 +397,9 @@ let setMode = (t: t, ~n: int, ~on: bool): unit =>
       t.alt = makeGrid(~width=t.width, ~height=t.height);
       t.altScreen = true;
       t.pendingWrap = false;
+      /* The alternate screen starts with its OWN, EMPTY keyboard stack -
+       * see the kittyMain/kittyAlt comment on [t]. */
+      t.kittyAlt = [];
     } else if (!on && t.altScreen) {
       t.altScreen = false;
       let (r, c) = t.savedCursor;
@@ -393,11 +420,34 @@ let handleCsi = (t: t, ~priv: string, ~params: string, ~final: char, ~raw: strin
   switch (priv, final) {
   | ("?", 'h') => Array.iter(n => setMode(t, ~n, ~on=true), ps)
   | ("?", 'l') => Array.iter(n => setMode(t, ~n, ~on=false), ps)
-  /* Kitty keyboard protocol push (ESC[>1u) and pop (ESC[<u). Parsed and
-   * ignored: they change how the terminal ENCODES key input, which has no
-   * effect on the screen this model renders. */
-  | (">", 'u')
-  | ("<", 'u') => ()
+  /* Kitty keyboard protocol push (ESC[>Nu) and pop (ESC[<u / ESC[<Nu).
+   * These change how the terminal ENCODES key input, so they leave the
+   * screen alone - but they are MODELLED, not ignored, because a stack left
+   * pushed on exit is exactly what strands a user's shell emitting CSI-u
+   * for Ctrl+C. The stack is per screen buffer; see [t]. */
+  | (">", 'u') =>
+    let flags = param(ps, 0, 1);
+    if (t.altScreen) {
+      t.kittyAlt = [flags, ...t.kittyAlt];
+    } else {
+      t.kittyMain = [flags, ...t.kittyMain];
+    };
+  | ("<", 'u') =>
+    /* Pop N (default 1), CLAMPED at empty - the kitty spec makes an
+     * over-pop harmless, which is what lets a restore pop both screens'
+     * stacks unconditionally. */
+    let n = max(1, param(ps, 0, 1));
+    let rec drop = (k, l) =>
+      switch (k, l) {
+      | (0, l) => l
+      | (_, []) => []
+      | (k, [_, ...rest]) => drop(k - 1, rest)
+      };
+    if (t.altScreen) {
+      t.kittyAlt = drop(n, t.kittyAlt);
+    } else {
+      t.kittyMain = drop(n, t.kittyMain);
+    };
   | ("", 'H')
   | ("", 'f') =>
     let r = max(1, param(ps, 0, 1));
@@ -705,6 +755,15 @@ let cursorVisible = (t: t): bool => t.cursorVisible;
 let bracketedPaste = (t: t): bool => t.bracketedPaste;
 let mouseReporting = (t: t): bool => t.mouseReporting;
 let size = (t: t): (int, int) => (t.width, t.height);
+
+/* Depth of the kitty keyboard stack on the CURRENTLY DISPLAYED screen. */
+let kittyDepth = (t: t): int =>
+  List.length(t.altScreen ? t.kittyAlt : t.kittyMain);
+
+/* Depth of the MAIN screen's kitty keyboard stack, whichever screen is
+ * displayed right now. This is the one that matters after a child exits:
+ * a non-zero depth here is a shell left speaking CSI-u. */
+let kittyDepthMain = (t: t): int => List.length(t.kittyMain);
 
 let cellSgr = (t: t, ~row: int, ~col: int): list(int) =>
   if (row < 0 || row >= t.height || col < 0 || col >= t.width) {

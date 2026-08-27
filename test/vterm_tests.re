@@ -448,6 +448,100 @@ let run = () =>
     });
 
     /* ========================================================================
+     * Kitty keyboard protocol stacks (one per screen buffer)
+     * ====================================================================== */
+
+    Test.run("a push on the main screen is invisible from the alt screen", () => {
+      let t = Vterm.create(~width=10, ~height=3);
+      Test.assertEqual(Vterm.kittyDepth(t), 0, "nothing pushed yet");
+      Vterm.feed(t, esc ++ "[>1u");
+      Test.assertEqual(Vterm.kittyDepth(t), 1, "pushed on the main screen");
+
+      Vterm.feed(t, esc ++ "[?1049h");
+      Test.assertEqual(
+        Vterm.kittyDepth(t),
+        0,
+        "the alternate screen has its OWN, empty stack - this is the whole "
+        ++ "bug: a pop here would NOT undo the main screen's push",
+      );
+      Test.assertEqual(
+        Vterm.kittyDepthMain(t),
+        1,
+        "and the main screen's push is still standing",
+      );
+
+      /* Popping the alt screen's empty stack clamps - it is not an error,
+         and it must not reach across to the main screen. */
+      Vterm.feed(t, esc ++ "[<u");
+      Test.assertEqual(Vterm.kittyDepth(t), 0, "pop on empty clamps at zero");
+      Test.assertEqual(
+        Vterm.kittyDepthMain(t),
+        1,
+        "and left the main screen's stack alone",
+      );
+
+      Vterm.feed(t, esc ++ "[?1049l");
+      Test.assertEqual(
+        Vterm.kittyDepth(t),
+        1,
+        "back on the main screen, the push from before is STILL in force",
+      );
+    });
+
+    Test.run("the restore sequence (pop, 1049l, pop) empties the main stack", () => {
+      /* Exactly what Terminal.restoreTerminal writes, on exactly the state
+         a fullscreen app leaves behind: pushed on main by setRawMode, then
+         pushed again on the alt screen by Runtime's Fullscreen setup. */
+      let t = Vterm.create(~width=10, ~height=3);
+      Vterm.feed(t, esc ++ "[>1u");
+      Vterm.feed(t, esc ++ "[?1049h");
+      Vterm.feed(t, esc ++ "[>1u");
+      Test.assertEqual(Vterm.kittyDepth(t), 1, "alt screen pushed too");
+
+      Vterm.feed(t, esc ++ "[<u" ++ esc ++ "[?1049l" ++ esc ++ "[<u");
+      Test.assertEqual(
+        Vterm.kittyDepthMain(t),
+        0,
+        "the shell gets its keyboard back",
+      );
+      Test.assertFalse(Vterm.inAltScreen(t), "and its primary screen");
+    });
+
+    Test.run("a single pop leaves a fullscreen app's main stack pushed", () => {
+      /* The OLD restore order, kept here as the model's statement of the
+         reported bug: pop, then leave the alt screen. The pop lands on the
+         alt screen's stack and the main screen's push survives the exit. */
+      let t = Vterm.create(~width=10, ~height=3);
+      Vterm.feed(t, esc ++ "[>1u");
+      Vterm.feed(t, esc ++ "[?1049h");
+      Vterm.feed(t, esc ++ "[<u" ++ esc ++ "[?1049l");
+      Test.assertEqual(
+        Vterm.kittyDepthMain(t),
+        1,
+        "this is the bug: CSI-u still on for the user's shell",
+      );
+    });
+
+    Test.run("an inline app's push and single pop balance out", () => {
+      let t = Vterm.create(~width=10, ~height=3);
+      Vterm.feed(t, esc ++ "[>1u");
+      /* The same unconditional restore an inline app writes: the extra pop
+         and the 1049l are both no-ops here. */
+      Vterm.feed(t, esc ++ "[<u" ++ esc ++ "[?1049l" ++ esc ++ "[<u");
+      Test.assertEqual(Vterm.kittyDepthMain(t), 0, "balanced, and no lower");
+    });
+
+    Test.run("ESC[<Nu pops N entries, clamped", () => {
+      let t = Vterm.create(~width=10, ~height=3);
+      Vterm.feed(t, esc ++ "[>1u" ++ esc ++ "[>5u" ++ esc ++ "[>3u");
+      Test.assertEqual(Vterm.kittyDepth(t), 3, "three pushes");
+      Vterm.feed(t, esc ++ "[<2u");
+      Test.assertEqual(Vterm.kittyDepth(t), 1, "two popped");
+      Vterm.feed(t, esc ++ "[<9u");
+      Test.assertEqual(Vterm.kittyDepth(t), 0, "an over-pop clamps at empty");
+    });
+
+    /* ========================================================================
      * Resize
      * ====================================================================== */
 

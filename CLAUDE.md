@@ -123,7 +123,7 @@ session outside `withSession`, and never wait on a child with a bare sleep.
 | `lib/TextArea.re` | `<TextArea>` as applications get it (`Matcha.TextArea`): `include Element.TextArea` for everything pure, plus a shadowing `createElement` that wraps the renderer in a real component owning the cursor blink (`useState` + `useInterval` at 530ms, feeding `~cursorVisible`). `~blink=false` opts out; the blink is disabled under `MATCHA_HEADLESS=1` stream mode. Adds `~key` support the element-level `createElement` never had. | ~105 lines |
 | `lib/Clickable.re` | `<Clickable onClick>` — click target sized to the box its parent allocated; innermost-under-pointer wins; wheel passes through unless `~onMouseDown` is given. | ~80 lines |
 | `lib/FrameDiff.re` | Pure line-diff between frames with ABSOLUTE addressing on a cleared screen. This is what paints **Fullscreen** (alternate-screen) mode; `Inline` mode paints via `LiveRegion` instead. | ~115 lines |
-| `lib/Terminal.re` | The only module doing real terminal I/O: raw mode (via a C stub, `terminal_stubs`), cursor show/hide, screen clear, terminal size, raw byte reads, bracketed-paste/kitty/mouse mode toggles, `queryBackground` (the OSC 11 theme probe). | ~200 lines |
+| `lib/Terminal.re` | The only module doing real terminal I/O: raw mode (via a C stub, `terminal_stubs`), cursor show/hide, screen clear, terminal size, raw byte reads, bracketed-paste/kitty/mouse mode toggles, `queryBackground` (the OSC 11 theme probe). `restoreTerminal` owns the exit sequence and its ordering matters: `ESC[<u`, `ESC[?1049l`, `ESC[<u` (kitty stacks are per screen buffer — see the gotcha below), then `?2004l`, `?1002;1006l`, show cursor. | ~215 lines |
 | `lib/Context.re` | React-style context: `create`/`provide`/`use`, plus the `Context.Make` functor for typed provider/consumer modules. | ~120 lines |
 | `lib/Matcha.re` + `lib/Matcha.rei` | Public API surface — re-exports the modules above plus convenience aliases (`flex`/`percent`/`chars`, color constructors, `useLayout`, `useStdout`, headless helpers). The `.rei` **pins** that surface: adding a `let` to `Matcha.re` alone does not export it, and removing one is a build error. Read these first when answering "does Matcha support X". | ~120 + ~285 lines |
 | `lib/Component.re`, `lib/Event.re` | Thin convenience re-exports of a subset of `Hooks` (`Component.useState`; `Event.useQuit`/`useKeyDown`/`useFocus`/`useFocusManager`/`useInput`/`useMouse`) used throughout the examples. | ~16/~28 lines |
@@ -188,6 +188,27 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   are *registrations* re-collected from scratch each frame — calling them
   conditionally is safe and idiomatic (that is how `~isActive` gating
   works).
+- **The kitty keyboard stack is kept PER SCREEN BUFFER; restore must leave
+  the alt screen BETWEEN its two pops.** kitty, Ghostty and recent iTerm2
+  hold a separate keyboard-flag stack for the main and the alternate
+  screen. `Terminal.setRawMode` pushes `ESC[>1u` on whichever screen is
+  live — the main one — and `Runtime.start`'s `Fullscreen` setup pushes
+  again (`Terminal.pushKittyKeyboard`, the single definition of that
+  emission) right after `enterAltScreen`, because the alt screen would
+  otherwise start with default flags and a fullscreen app would silently
+  lack the disambiguation the inline path has. `Terminal.restoreTerminal`
+  therefore writes **`ESC[<u`, `ESC[?1049l`, `ESC[<u`** in that order: pop
+  the current screen, leave the alternate screen, pop the main screen's
+  stack. Popping once and *then* leaving the alt screen — the order this
+  code shipped with — pops the alt stack, discards it with the screen
+  switch, and strands the main screen's push, so the user's shell emits
+  CSI-u for Ctrl+C for the rest of the session. That was a real
+  user-reported bug. Per the kitty spec an over-pop clamps harmlessly, so
+  the double pop is safe inline and on a crash before any push; terminals
+  without the protocol ignore all of it. `test/vterm.re` models both
+  stacks (`kittyDepth`, `kittyDepthMain`) and both `test/pty_tests.re`
+  lifecycle cases assert `kittyDepthMain == 0` after exit.
+
 - **The interactive loop renders INLINE by default; `quit(ClearScreen)`
   erases only the live region.** In `Inline` mode there is no
   `ESC[2J`/alt-screen: the app paints at the current cursor position via

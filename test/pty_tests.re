@@ -133,6 +133,15 @@ let run = () => {
         Test.assertContains(log, "\027[?2004l", "bracketed paste turned off");
         Test.assertContains(log, "\027[?1002;1006l", "mouse mode turned off");
         Test.assertContains(log, "\027[?25h", "cursor shown again");
+        /* The USER'S SHELL gets its keyboard back. Asserted on the terminal
+           model, not on the byte log: a pop is only a pop if it lands on
+           the screen that was pushed - see the fullscreen case below and
+           Vterm's kittyMain/kittyAlt comment. */
+        Test.assertEqual(
+          Vterm.kittyDepthMain(Pty.vterm(s)),
+          0,
+          "the kitty keyboard stack is empty on the MAIN screen after exit",
+        );
         /* An INLINE app must never take over the alternate screen.
            NOTE: the log DOES contain "?1049l" - Terminal.restoreTerminal
            sends it unconditionally on every exit path, on purpose, so a
@@ -327,6 +336,27 @@ let run = () => {
               Pty.byteLog(s),
               "\027[?1049l",
               "the exit really did write the leave-alt-screen sequence",
+            );
+            /* THE USER-REPORTED BUG, machine-caught. kitty-protocol
+               terminals keep the keyboard stack per SCREEN BUFFER, so a
+               fullscreen app that pops before leaving the alternate screen
+               pops the ALT screen's stack and leaves the main screen's push
+               - the one setRawMode made - standing forever. The user then
+               gets CSI-u garbage from Ctrl+C in their shell. The restore
+               must pop the current screen, leave the alt screen, and pop
+               again. */
+            Test.assertEqual(
+              Vterm.kittyDepthMain(vt),
+              0,
+              "the kitty keyboard stack is empty on the MAIN screen after a "
+              ++ "FULLSCREEN app exits - the user's shell is not left "
+              ++ "speaking CSI-u",
+            );
+            Test.assertContains(
+              Pty.byteLog(s),
+              "\027[<u\027[?1049l\027[<u",
+              "and the restore wrote the three in the only order that "
+              ++ "works: pop the alt screen, leave it, pop the main screen",
             );
           })
         });

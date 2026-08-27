@@ -48,6 +48,24 @@ let moveCursor = (row: int, col: int) => {
   Printf.printf("\027[%d;%dH", row, col);
 };
 
+/* Push the kitty keyboard protocol in disambiguate-only mode (ESC[>1u).
+ *
+ * Legacy keys keep sending their legacy sequences, but otherwise-ambiguous
+ * ones (ESC itself, modified Enter/Tab) arrive as CSI-u instead. Ignored
+ * outright by terminals that don't support it.
+ *
+ * The protocol's flags live on a STACK, and on kitty, Ghostty and recent
+ * iTerm2 that stack is kept SEPARATELY PER SCREEN BUFFER - so a push made
+ * on the main screen does not carry over to the alternate one, and vice
+ * versa. That is why this is a named function with two callers: setRawMode
+ * pushes for the main screen, and Runtime's Fullscreen setup pushes again
+ * once it has entered the alternate screen. restoreTerminal pops both.
+ */
+let pushKittyKeyboard = () => {
+  print_string("\027[>1u");
+  flush(stdout);
+};
+
 /* Put the terminal into raw mode for character-by-character input.
  *
  * Disables:
@@ -77,11 +95,7 @@ let setRawMode = () => {
     Unix.c_vtime: 1,
   };
   Unix.tcsetattr(Unix.stdin, Unix.TCSANOW, rawTermio);
-  /* Push the kitty keyboard protocol in disambiguate-only mode: legacy
-   * keys keep sending their legacy sequences, but otherwise-ambiguous
-   * ones (ESC itself, modified Enter/Tab) arrive as CSI-u instead.
-   * Ignored outright by terminals that don't support it. */
-  print_string("\027[>1u");
+  pushKittyKeyboard();
   /* Enable bracketed paste (B2/S6): pasted text arrives wrapped in
    * ESC[200~ ... ESC[201~ instead of as indistinguishable keystrokes.
    * InputDecoder recognizes the wrapper and surfaces the body as one
@@ -167,10 +181,30 @@ let restoreTerminal = () => {
   | Some(termio) => Unix.tcsetattr(Unix.stdin, Unix.TCSANOW, termio)
   | None => ()
   };
-  /* Pop the kitty keyboard protocol stack unconditionally - safe to send
-   * even if it was never successfully pushed (or the terminal doesn't
-   * support it at all), and must run on every exit path (crash-safe via
-   * the existing at_exit registration). */
+  /* POP THE KITTY KEYBOARD STACK ON BOTH SCREENS, IN THIS ORDER.
+   *
+   * The kitty keyboard protocol's flag stack is kept SEPARATELY FOR THE
+   * MAIN AND THE ALTERNATE SCREEN by kitty, Ghostty and recent iTerm2.
+   * setRawMode pushes on whichever screen is live at startup - the MAIN
+   * one - and Runtime's Fullscreen setup pushes again after switching to
+   * the alternate screen. So a fullscreen app has a push standing on each.
+   *
+   * Popping once and only then leaving the alternate screen (the order
+   * this code used to have) pops the ALT screen's stack and then throws
+   * that whole stack away with the screen switch, leaving the MAIN
+   * screen's push in force for the rest of the user's shell session -
+   * which is the reported bug: Ctrl+C and other modified keys arriving as
+   * CSI-u garbage at the prompt after quitting a fullscreen Matcha app.
+   *
+   * Hence: pop the current screen, THEN leave the alternate screen, THEN
+   * pop the main screen's stack. Per the kitty spec a pop of an empty
+   * stack clamps harmlessly, so the double pop is safe for an inline app
+   * (which pushed only once) and for a crash before any push at all;
+   * terminals without the protocol ignore all of it. Unconditional for
+   * the same crash-safety reason as everything below - this is the one
+   * path that reliably runs on every exit (via the at_exit registration). */
+  print_string("\027[<u");
+  print_string("\027[?1049l");
   print_string("\027[<u");
   /* Disable bracketed paste and SGR mouse reporting unconditionally, for
    * the same crash-safety reason: both are TTY-path-only escape emissions
@@ -180,13 +214,13 @@ let restoreTerminal = () => {
    * kill - via the existing at_exit registration). */
   print_string("\027[?2004l");
   print_string("\027[?1002;1006l");
-  /* Leave the alternate screen unconditionally, same crash-safety
-   * rationale: only Runtime's Fullscreen screen mode ever enters it, and
-   * leaving an alternate screen that was never entered is a no-op on every
-   * terminal - so sending it here, on the one path that reliably runs on
-   * every exit, is what guarantees a crashed fullscreen app cannot strand
-   * the user on a blank alternate buffer. */
-  print_string("\027[?1049l");
+  /* NOTE: the leave-alternate-screen (ESC[?1049l) that used to sit here is
+   * now sandwiched between the two kitty pops above. It is still sent
+   * unconditionally, for the same crash-safety reason: only Runtime's
+   * Fullscreen screen mode ever enters the alternate screen, leaving one
+   * that was never entered is a no-op on every terminal, and sending it on
+   * the one path that reliably runs on every exit is what guarantees a
+   * crashed fullscreen app cannot strand the user on a blank buffer. */
   showCursor();
   print_newline();
 };

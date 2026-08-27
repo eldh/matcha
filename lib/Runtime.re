@@ -2212,7 +2212,15 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
       /* Take over the whole viewport. No DSR query: on the alternate screen
          the frame always starts at row 1, so there is no cursor position to
          learn and no bottomRow to correct. */
-      Terminal.enterAltScreen()
+      Terminal.enterAltScreen();
+      /* Push the kitty keyboard protocol AGAIN, for the alternate screen.
+         kitty-protocol terminals keep the keyboard-flag stack SEPARATELY
+         PER SCREEN BUFFER, so setRawMode's push (made on the main screen a
+         moment ago) does not apply here: without this, a fullscreen app
+         would silently lack the key disambiguation the inline path gets.
+         Terminal.restoreTerminal pops BOTH stacks on the way out - see its
+         comment for the ordering that makes that work. */
+      Terminal.pushKittyKeyboard();
     | Inline =>
       /* Ask the terminal where the cursor is, once, now that raw mode is on
        * (so the reply is not echoed and lands in our own input stream).
