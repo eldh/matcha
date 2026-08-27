@@ -305,6 +305,15 @@ type instanceState = {
    * render, exactly like renderedComponentIds, so the table always
    * describes the last frame that was actually painted. */
   componentBounds: Hashtbl.t(Element.componentId, Mouse.rect),
+  /* ---- Terminal background color --------------------------------------
+   * The terminal's own background, as (r, g, b) with 0..255 per channel,
+   * once it has told us - Runtime.start sends an OSC 11 query at startup and
+   * fills this in when (and if) the reply arrives. None means "not known",
+   * which for a terminal that never answers is permanent, so
+   * useTerminalBackground's callers must always have a default. Not a hook
+   * slot: it is a property of the running application, read by any number of
+   * components. */
+  mutable terminalBg: option((int, int, int)),
 };
 
 /* Create an empty instance state. */
@@ -326,6 +335,7 @@ let freshInstance = (): instanceState => {
   pendingRawOutput: ref([]),
   staticAllowed: true,
   componentBounds: Hashtbl.create(64),
+  terminalBg: None,
 };
 
 /* The instance currently in force. Replaced by Runtime on every start. */
@@ -1031,6 +1041,47 @@ let useQuit = (): (quitBehavior => unit) => {
   let ctx = getContext();
   ctx.quit;
 };
+
+/* ============================================================================
+ * Terminal background color (OSC 11)
+ * ============================================================================ */
+
+/* Record a terminal background reply on [st]. Returns true only when the
+ * value actually CHANGED, so the caller can mark the root dirty on that and
+ * nothing else - a terminal that re-answers with the color we already knew
+ * must not cost a frame. Same discipline as commitFocus's gated re-render. */
+let setTerminalBackground =
+    (st: instanceState, rgb: (int, int, int)): bool =>
+  if (st.terminalBg == Some(rgb)) {
+    false;
+  } else {
+    st.terminalBg = Some(rgb);
+    true;
+  };
+
+/* The terminal's background color as (r, g, b), 0..255 per channel, or None.
+ *
+ * Registration-style: no hook slot, no dependency array - it just reads the
+ * running application's state, so it is safe to call conditionally and from
+ * any depth.
+ *
+ * None until the terminal answers Runtime's startup OSC 11 query - AND
+ * POSSIBLY FOREVER: plenty of terminals (and every pipe, CI job and headless
+ * run) never reply. Applications must therefore have a None branch; the
+ * usual choice is "assume dark", which is what most terminals are.
+ *
+ * When a reply does arrive mid-session the runtime marks the root dirty, so
+ * the application re-renders exactly once with the new value.
+ *
+ * Example:
+ *   let isLight =
+ *     switch (Hooks.useTerminalBackground()) {
+ *     | Some((r, g, b)) => r + g + b > 382
+ *     | None => false
+ *     };
+ */
+let useTerminalBackground = (): option((int, int, int)) =>
+  instance().terminalBg;
 
 /* Handle returned by useStdout: an escape hatch for writing plain text above
  * the live region, without going through <Static>. */

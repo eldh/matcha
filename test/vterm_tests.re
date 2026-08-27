@@ -308,6 +308,96 @@ let run = () =>
       Test.assertEqual(Vterm.cellSgr(t, ~row=0, ~col=0), [], "bare SGR resets");
     });
 
+    Test.run("a 24-bit direct-color SGR is carried per cell, unchanged", () => {
+      /* The model tracks SGR parameters generically, so truecolor needed no
+         change here - this pins that, and that a 48;2 background is not
+         mistaken for something the model does not know. */
+      let t = Vterm.create(~width=6, ~height=2);
+      let bg = Matcha.Element.styleToAnsi(Matcha.Element.BgColor(Matcha.Element.RgbFull(0, 40, 8)));
+      Vterm.feed(t, bg ++ "A");
+      Test.assertEqual(
+        Vterm.cellSgr(t, ~row=0, ~col=0),
+        [48, 2, 0, 40, 8],
+        "the five direct-color params reach the cell verbatim",
+      );
+      Test.assertEqual(
+        Vterm.unknownSeqs(t),
+        [],
+        "and a truecolor SGR is not an unknown sequence",
+      );
+    });
+
+    /* ========================================================================
+     * OSC
+     * ====================================================================== */
+
+    Test.run("an OSC query is consumed without touching the grid", () => {
+      let t = Vterm.create(~width=8, ~height=2);
+      Vterm.feed(t, "ab" ++ esc ++ "]11;?\007" ++ "cd");
+      Test.assertEqualStr(
+        Vterm.row(t, 0),
+        "abcd    ",
+        "the OSC printed nothing and moved nothing",
+      );
+      Test.assertEqual(
+        Vterm.takeOscQueries(t),
+        [(11, "?")],
+        "the (code, payload) pair is recorded for a harness to answer",
+      );
+      Test.assertEqual(
+        Vterm.unknownSeqs(t),
+        [],
+        "an OSC is implemented, not unknown - audits must stay clean",
+      );
+    });
+
+    Test.run("an ST-terminated OSC is consumed the same way", () => {
+      let t = Vterm.create(~width=8, ~height=2);
+      Vterm.feed(t, esc ++ "]11;rgb:1e1e/1e1e/1e1e" ++ esc ++ "\\" ++ "x");
+      Test.assertEqualStr(Vterm.row(t, 0), "x       ", "only the 'x' printed");
+      Test.assertEqual(
+        Vterm.takeOscQueries(t),
+        [(11, "rgb:1e1e/1e1e/1e1e")],
+        "the terminator is stripped off the payload",
+      );
+      Test.assertEqual(Vterm.unknownSeqs(t), [], "still nothing unknown");
+    });
+
+    Test.run("an OSC split across two feeds is still one query", () => {
+      let t = Vterm.create(~width=8, ~height=2);
+      Vterm.feed(t, "a" ++ esc ++ "]11;");
+      Test.assertEqual(Vterm.takeOscQueries(t), [], "nothing yet - unterminated");
+      Vterm.feed(t, "?\007b");
+      Test.assertEqualStr(Vterm.row(t, 0), "ab      ", "both plain bytes printed");
+      Test.assertEqual(
+        Vterm.takeOscQueries(t),
+        [(11, "?")],
+        "the halves joined into one query",
+      );
+    });
+
+    Test.run("takeOscQueries drains, oldest first", () => {
+      let t = Vterm.create(~width=8, ~height=2);
+      Vterm.feed(t, esc ++ "]11;?\007" ++ esc ++ "]10;?\007");
+      Test.assertEqual(
+        Vterm.takeOscQueries(t),
+        [(11, "?"), (10, "?")],
+        "arrival order",
+      );
+      Test.assertEqual(Vterm.takeOscQueries(t), [], "and the queue is drained");
+    });
+
+    Test.run("a malformed OSC body still counts as unknown", () => {
+      let t = Vterm.create(~width=8, ~height=2);
+      Vterm.feed(t, esc ++ "]notacode;x\007");
+      Test.assertEqual(Vterm.takeOscQueries(t), [], "not recorded as a query");
+      Test.assertEqual(
+        List.length(Vterm.unknownSeqs(t)),
+        1,
+        "a body with a non-numeric code is logged as unknown instead",
+      );
+    });
+
     /* ========================================================================
      * Chunking
      * ====================================================================== */

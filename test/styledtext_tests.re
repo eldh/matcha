@@ -87,6 +87,95 @@ let run = () => {
     });
   });
 
+  /* Truecolor has to survive this module intact, because every clipped or
+   * wrapped row goes through parse -> transform -> bake. A parser that did
+   * not know "38;2;r;g;b" would silently DROP the style on exactly those
+   * rows, so a tinted diff would lose its background wherever it was cut. */
+  Test.group("StyledText: 24-bit truecolor round-trip", () => {
+    Test.run("a truecolor fg+bg line round-trips byte-for-byte", () => {
+      let fg = Element.styleToAnsi(Element.FgColor(Element.RgbFull(12, 200, 255)));
+      let bg = Element.styleToAnsi(Element.BgColor(Element.RgbFull(0, 40, 8)));
+      Test.assertEqualStr(fg, "\027[38;2;12;200;255m", "sanity: fg bytes");
+      Test.assertEqualStr(bg, "\027[48;2;0;40;8m", "sanity: bg bytes");
+      let rendered = fg ++ bg ++ "hi" ++ reset;
+      Test.assertEqualStr(
+        StyledText.bake(StyledText.parse(rendered)),
+        rendered,
+        "bake(parse(x)) == x for a truecolor fg+bg span",
+      );
+    });
+
+    Test.run("parse decodes truecolor into RgbFull chunks", () => {
+      let fg = Element.styleToAnsi(Element.FgColor(Element.RgbFull(1, 2, 3)));
+      let bg = Element.styleToAnsi(Element.BgColor(Element.RgbFull(4, 5, 6)));
+      switch (StyledText.parse(fg ++ bg ++ "a" ++ reset)) {
+      | [[c]] =>
+        assertLine(
+          [c],
+          [
+            {
+              bytes: "a",
+              width: 1,
+              styles: [
+                Element.FgColor(Element.RgbFull(1, 2, 3)),
+                Element.BgColor(Element.RgbFull(4, 5, 6)),
+              ],
+            },
+          ],
+          "both direct-color styles are active on the cell",
+        )
+      | other =>
+        Test.assertEqual(List.length(other), 1, "expected exactly one chunk line")
+      };
+    });
+
+    Test.run("truncateLine keeps the truecolor styles at the cut", () => {
+      let bg = Element.styleToAnsi(Element.BgColor(Element.RgbFull(0, 40, 8)));
+      let rendered = bg ++ "abcdefgh" ++ reset;
+      switch (StyledText.parse(rendered)) {
+      | [line] =>
+        let clipped = StyledText.bake([StyledText.truncateLine(line, 4)]);
+        Test.assertEqualStr(
+          clipped,
+          bg ++ "abc" ++ ellipsis ++ reset,
+          "the clipped row re-opens the exact truecolor background, "
+          ++ "ellipsis included",
+        );
+      | _ => Test.assertTrue(false, "expected one parsed line")
+      };
+    });
+
+    Test.run("a wrap across a truecolor span re-opens it on the next line", () => {
+      let bg = Element.styleToAnsi(Element.BgColor(Element.RgbFull(72, 8, 8)));
+      let wrapped =
+        StyledText.wrapString(
+          ~mode=Element.Wrap,
+          ~width=6,
+          bg ++ "hello world" ++ reset,
+        );
+      Test.assertEqualStr(
+        wrapped,
+        bg ++ "hello" ++ reset ++ "\n" ++ bg ++ "world" ++ reset,
+        "the continuation line carries the same 48;2 escape, not a lost tint",
+      );
+    });
+
+    Test.run("a malformed direct-color introducer drops the style, no crash", () => {
+      /* Three params where five are needed: the sequence is consumed and the
+         style dropped, rather than an RgbFull built from what is not there. */
+      Test.assertEqualStr(
+        StyledText.bake(StyledText.parse("\027[38;2;12m" ++ "hi")),
+        "hi",
+        "truncated 38;2 leaves the text unstyled",
+      );
+      Test.assertEqualStr(
+        StyledText.bake(StyledText.parse("\027[48;2m" ++ "hi")),
+        "hi",
+        "a bare 48;2 with no channels at all is dropped too",
+      );
+    });
+  });
+
   Test.group("StyledText: wrapString(Wrap)", () => {
     Test.run("plain greedy word wrap", () => {
       Test.assertEqualStr(

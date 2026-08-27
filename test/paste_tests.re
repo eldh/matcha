@@ -60,7 +60,140 @@ module PasteRecorder = {
   };
 };
 
+/* An OSC 11 (background color) reply, in the two terminator flavours real
+ * terminals use. The payload is xterm's X color spec, 4 hex digits per
+ * component. */
+let oscBel = "\027]11;rgb:1e1e/1e1e/1e1e\007";
+let oscSt = "\027]11;rgb:1e1e/1e1e/1e1e\027\\";
+let oscReport =
+  InputDecoder.OscReport(11, "rgb:1e1e/1e1e/1e1e");
+
 let run = () => {
+  /* OSC replies are terminal plumbing, exactly like the DSR CursorReport:
+   * they arrive on the same input stream as keystrokes and must be framed
+   * out of it, never handed to an application key handler. Key.t
+   * deliberately has no constructor for them. */
+  Test.group("InputDecoder - OSC reports", () => {
+    Test.run("a BEL-terminated OSC yields one OscReport", () =>
+      Test.assertEqual(
+        decodeAll(oscBel),
+        [oscReport],
+        "code 11 and the raw payload, split at the first ';'",
+      )
+    );
+
+    Test.run("an ST-terminated OSC yields the same OscReport", () =>
+      Test.assertEqual(
+        decodeAll(oscSt),
+        [oscReport],
+        "ESC-backslash terminates the string as well as BEL does",
+      )
+    );
+
+    Test.run("an OSC split at every byte boundary still yields one report", () => {
+      let n = String.length(oscSt);
+      for (at in 1 to n - 1) {
+        Test.assertEqual(
+          decodeSplitAt(oscSt, at),
+          [oscReport],
+          "split at byte " ++ string_of_int(at) ++ " still yields one report",
+        );
+      };
+    });
+
+    Test.run("byte-at-a-time feeding works for both terminators", () => {
+      Test.assertEqual(
+        decodeByteByByte(oscBel),
+        [oscReport],
+        "BEL-terminated, one byte per feed",
+      );
+      Test.assertEqual(
+        decodeByteByByte(oscSt),
+        [oscReport],
+        "ST-terminated, one byte per feed - the ESC of the ST is held back "
+        ++ "until the byte after it decides whether it was a terminator",
+      );
+    });
+
+    Test.run("an OSC interleaved with keys keeps every event in order", () =>
+      Test.assertEqual(
+        decodeAll("a" ++ oscBel ++ "b"),
+        [
+          InputDecoder.KeyEvent(Key.Char('a'), Key.noModifiers),
+          oscReport,
+          InputDecoder.KeyEvent(Key.Char('b'), Key.noModifiers),
+        ],
+        "the OSC is framed out of the stream, the keys pass through",
+      )
+    );
+
+    Test.run("an ESC inside the body is payload, not a terminator", () =>
+      /* ESC followed by anything other than a backslash is body content;
+         the sequence still ends at its real terminator. */
+      Test.assertEqual(
+        decodeAll("\027]777;a\027bc\007"),
+        [InputDecoder.OscReport(777, "a\027bc")],
+        "the stray ESC survives in the payload",
+      )
+    );
+
+    Test.run("a payload containing ';' splits at the FIRST one only", () =>
+      Test.assertEqual(
+        decodeAll("\027]11;rgb:00/00/00;extra\007"),
+        [InputDecoder.OscReport(11, "rgb:00/00/00;extra")],
+        "only the code is taken off the front",
+      )
+    );
+
+    Test.run("a body with no ';' or a non-numeric code is dropped", () => {
+      Test.assertEqual(decodeAll("\027]nosemi\007"), [], "no ';' - nothing emitted");
+      Test.assertEqual(
+        decodeAll("\027]xx;body\007"),
+        [],
+        "non-numeric code - nothing emitted",
+      );
+    });
+
+    Test.run("an unterminated OSC emits nothing, at flush or ever", () => {
+      /* Discarded rather than replayed through Key.parse: a held
+         "ESC ] 1 1 ; ..." prefix is not a key sequence, and pushing it
+         through would spray bogus Alt-key events at the application. */
+      Test.assertEqual(
+        decodeAll("\027]11;rgb:1e1e"),
+        [],
+        "flush over a partial OSC produces no events at all",
+      );
+      /* And it is not "pending escape" either, so Runtime's 25ms
+         lone-ESC flush trigger never fires mid-OSC. */
+      let d = InputDecoder.create();
+      let b = Bytes.of_string("\027]11;rgb:");
+      ignore(InputDecoder.feed(d, b, Bytes.length(b)));
+      Test.assertFalse(
+        InputDecoder.pendingEsc(d),
+        "an OSC in progress is not treated as a pending lone ESC",
+      );
+      /* The accumulation is left in place, so the rest of a reply split
+         across a flush boundary still completes. */
+      ignore(InputDecoder.flush(d));
+      let rest = Bytes.of_string("1e1e/1e1e/1e1e\007");
+      Test.assertEqual(
+        InputDecoder.feed(d, rest, Bytes.length(rest)),
+        [oscReport],
+        "the reply completes on the next feed, after an intervening flush",
+      );
+    });
+
+    Test.run("ESC ] no longer decodes as an Alt+']' keypress", () =>
+      /* Behavior change, on purpose: no terminal sends Alt+']' as ESC ],
+         and every OSC reply starts exactly there. */
+      Test.assertEqual(
+        decodeAll("\027]"),
+        [],
+        "a bare OSC introducer produces nothing",
+      )
+    );
+  });
+
   Test.group("InputDecoder - bracketed paste", () => {
     Test.run("one-chunk paste yields a single PasteEvent", () => {
       let events = decodeAll(pasteStart ++ "hello" ++ pasteEnd);

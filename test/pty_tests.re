@@ -235,6 +235,37 @@ let run = () => {
           })
         });
 
+        Test.run("the background is probed with OSC 11 exactly once", () => {
+          /* The one new byte sequence an interactive session emits since
+             theme detection landed. It must go out ONCE, at startup, in
+             BOTH screen modes (this is the Fullscreen one - the chat case
+             above covers Inline through the same byte log), and the
+             terminal's reply must be framed out of the input stream rather
+             than delivered to the app as keystrokes. */
+          Pty.withSession(~width=100, ~height=30, ccBin, [], s => {
+            Pty.drain(~quietMs=300, ~timeoutMs=6000, s);
+            let log = Pty.byteLog(s);
+            Test.assertEqual(
+              Pty.countOccurrences(log, "\027]11;?\007"),
+              1,
+              "exactly one background query, at startup",
+            );
+            /* Pty.absorb answered it with rgb:1e1e/1e1e/1e1e. If the reply
+               had reached the application as keys, claude-code's input box
+               would be full of them. */
+            Test.assertFalse(
+              Test.contains(Vterm.text(Pty.vterm(s)), "rgb:"),
+              "the OSC reply never reached the application as text",
+            );
+            assertNoUnknown(s, "claude-code background probe");
+            Pty.send(s, "\003\003");
+            assertExitedCleanly(
+              Pty.waitExit(~timeoutMs=6000, s),
+              "quit after the background probe",
+            );
+          })
+        });
+
         Test.run("a prompt streams, Esc interrupts, and the exit restores", () => {
           Pty.withSession(~width=80, ~height=24, ccBin, [], s => {
             Pty.drain(~quietMs=300, ~timeoutMs=6000, s);

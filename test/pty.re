@@ -137,6 +137,12 @@ let send = (s: session, data: string): unit => {
 let dsrReply = ((row, col): (int, int)): string =>
   Printf.sprintf("\027[%d;%dR", row + 1, col + 1);
 
+/* What this harness answers an OSC 11 background-color query with: a DARK
+ * background (#1e1e1e), in the 4-hex-digit X form real terminals use, ST
+ * terminated. Fixed rather than configurable on purpose - the point is that
+ * the query gets an answer at all, so the reply path runs for real. */
+let oscBackgroundReply = "\027]11;rgb:1e1e/1e1e/1e1e\027\\";
+
 /* Read whatever is available right now. Returns the number of bytes read,
  * or -1 for end of stream (the child closed its side / exited: a pty master
  * gives EOF on macOS and EIO on Linux once the last slave fd is gone). */
@@ -154,8 +160,8 @@ let readAvailable = (s: session, buf: Bytes.t): int =>
     };
   };
 
-/* Feed a chunk to the model and the log, then answer any DSR the chunk
- * contained the way a real terminal would. */
+/* Feed a chunk to the model and the log, then answer any DSR or OSC query
+ * the chunk contained the way a real terminal would. */
 let absorb = (s: session, chunk: string): unit => {
   Buffer.add_string(s.log, chunk);
   Vterm.feed(s.vt, chunk);
@@ -165,6 +171,18 @@ let absorb = (s: session, chunk: string): unit => {
       | _ => ()
       },
     Vterm.takeDsrReplies(s.vt),
+  );
+  /* One reply per OSC 11 query, exactly like the DSR auto-reply above. Any
+     other OSC code is consumed and left unanswered, which is also what a
+     terminal does with a set (rather than query) request. */
+  List.iter(
+    ((code, _payload)) =>
+      if (code == 11) {
+        try(send(s, oscBackgroundReply)) {
+        | _ => ()
+        };
+      },
+    Vterm.takeOscQueries(s.vt),
   );
 };
 

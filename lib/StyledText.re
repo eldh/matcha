@@ -4,8 +4,9 @@
  * Matcha renders styling eagerly: [Element.Styled] emits the SGR escape for
  * its style, renders its child, then emits a reset (see [Element.render] and
  * [Runtime.renderElement]). Because every style Matcha ever emits is one of a
- * small CLOSED set (bold/dim/italic/underline/inverted, a 256-color fg or bg,
- * and the plain reset - see [Element.styleToAnsi]), a baked string can be
+ * small CLOSED set (bold/dim/italic/underline/inverted, a 256-color or
+ * 24-bit direct-color fg or bg, and the plain reset - see
+ * [Element.styleToAnsi]), a baked string can be
  * PARSED back into exactly the styled spans that produced it. That is the
  * "parse-back" approach this module implements: wrapping and truncation are
  * pure string -> string transforms, built on top of parsing already-rendered
@@ -192,6 +193,21 @@ let parse = (s: string): list(list(chunk)) => {
       active := addStyle(active^, Element.FgColor(codeToColor(n)))
     | (Some([48, 5, n]), 'm') =>
       active := addStyle(active^, Element.BgColor(codeToColor(n)))
+    /* 24-bit direct color: "38;2;r;g;b" / "48;2;r;g;b" - five params, which
+     * is what [Element.RgbFull] emits. Decoding these is what makes a
+     * truecolor span survive parse -> truncate/wrap -> bake unchanged. */
+    | (Some([38, 2, r, g, b]), 'm') =>
+      active := addStyle(active^, Element.FgColor(Element.RgbFull(r, g, b)))
+    | (Some([48, 2, r, g, b]), 'm') =>
+      active := addStyle(active^, Element.BgColor(Element.RgbFull(r, g, b)))
+    /* Defensive: a direct-color introducer with the wrong number of
+     * parameters (a truncated "38;2;12" from a writer that is not Matcha, or
+     * an ODA-style colon-separated form the CSI scan split differently). The
+     * whole sequence has already been consumed by [scanEscape], so there is
+     * nothing to resynchronize - just drop the style rather than build an
+     * RgbFull out of parameters that are not there. */
+    | (Some([38, 2, ..._]), 'm')
+    | (Some([48, 2, ..._]), 'm') => ()
     | _ => () /* unknown SGR (or non-SGR CSI) - drop */
     };
 

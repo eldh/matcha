@@ -139,6 +139,24 @@ let exitAltScreen = () => {
   flush(stdout);
 };
 
+/* Ask the terminal what its BACKGROUND color is (OSC 11 with a "?" value).
+ *
+ * The answer arrives on stdin as `ESC]11;rgb:RRRR/GGGG/BBBB` terminated by
+ * BEL or ST; InputDecoder frames it as an `OscReport(11, payload)`, Runtime
+ * parses the payload and stores it on the running instance, and
+ * [Hooks.useTerminalBackground] is how an application reads it - which is
+ * what lets a UI pick light-terminal or dark-terminal colors.
+ *
+ * Fire-and-forget, exactly like Runtime's DSR query: a terminal that does
+ * not implement OSC 11 (or answers late, or is not a terminal at all) simply
+ * never replies and costs nothing. That is why useTerminalBackground returns
+ * an option and why every caller needs a sensible default.
+ */
+let queryBackground = () => {
+  print_string("\027]11;?\007");
+  flush(stdout);
+};
+
 /* Restore terminal to its original state.
  *
  * Re-enables canonical mode and echo, shows cursor,

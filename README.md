@@ -181,7 +181,18 @@ child:
 <Text dim=true italic=true> "dim italic" </Text>
 <Text color=Red bgColor=White> "red on white" </Text>
 <Text color={Rgb(5, 0, 0)}> "custom RGB foreground" </Text>
+<Text bgColor={RgbFull(0, 40, 8)}> "24-bit truecolor background" </Text>
 ```
+
+Colors come in three flavors: the 16 named ANSI colors (`Red`, `BrightBlue`,
+…, which follow the user's own terminal palette), `Rgb(r, g, b)` with each
+channel in **0..5** — the 216-color cube, safe everywhere — and
+`RgbFull(r, g, b)` with each channel in **0..255**, which is 24-bit
+truecolor emitted as `38;2;r;g;b` / `48;2;r;g;b` and needs a truecolor-capable
+terminal. `Matcha.rgb` and `Matcha.rgbFull` are the convenience constructors.
+Truecolor survives Matcha's own wrapping and truncation intact: `StyledText`
+parses the direct-color escapes back out, so a clipped or wrapped row re-opens
+the exact same color.
 
 Props: `bold`, `dim`, `italic`, `underline`, `inverted` (`bool`), `color`,
 `bgColor` (`color`), `wrap` (`Element.wrap`; omitted means no wrapping):
@@ -382,6 +393,7 @@ the focus/input/mouse hooks) that the examples use.
 | `useStdout` | `unit => {write: string => unit}` | Commits plain text above the live region (Ink's `useStdout`); callable from anywhere, including background threads. |
 | `useQuit` | `unit => (quitBehavior => unit)` | `Event.useQuit` or `Hooks.useQuit`; call the returned function with `ClearScreen` (erases the live region, keeps the static transcript) or `PreserveScreen`. |
 | `useLayout` | `unit => constraints` | `Matcha.useLayout`; returns `{availWidth: int, availHeight: int}`, the space the parent Stack allocated to this component. |
+| `useTerminalBackground` | `unit => option((int, int, int))` | The terminal's own background color, 0..255 per channel, once it has answered Matcha's startup OSC 11 query. `None` until then — and possibly forever. |
 
 ```
 let quit = Event.useQuit();
@@ -399,6 +411,30 @@ Hooks.useEffect(() => {
 ```
 let {Runtime.availWidth, availHeight} = useLayout();
 ```
+
+#### Theme detection
+
+`Runtime.start` asks the terminal for its background color once at startup
+(an OSC 11 query, sent in both screen modes) and hands the answer to
+`useTerminalBackground`. When the reply lands the application re-renders
+exactly once with the new value, so a color scheme picked from it settles
+within a frame of launch.
+
+Many terminals — and every pipe, CI job and headless run — never answer, so
+`None` is permanent there and **every caller needs a default**. The usual
+idiom assumes dark:
+
+```
+let isLight =
+  switch (Hooks.useTerminalBackground()) {
+  | Some((r, g, b)) => relativeLuminance(r, g, b) > 0.5
+  | None => false /* assume dark */
+  };
+let theme = isLight ? lightTheme : darkTheme;
+```
+
+In a headless test, `handle.setTerminalBackground((250, 250, 250))` supplies
+the value a real terminal would have sent, and re-renders once.
 
 ### Context
 
@@ -572,6 +608,7 @@ let transcript = handle.getStaticOutput(true); /* all <Static>/useStdout
                                                   output ever committed */
 let focused = handle.getFocusedId();     /* the id useFocus currently owns */
 handle.advanceTime(1500);  /* virtual clock: fires useInterval/useTimeout */
+handle.setTerminalBackground((250, 250, 250)); /* what OSC 11 would answer */
 handle.resize(40, 10);
 let (w, h) = handle.getSize();
 handle.render();       /* force a re-render, returns the new frame */

@@ -355,6 +355,13 @@ type headlessHandle = {
      100_000 iterations (a timer re-registering itself with ms<=~0 would
      otherwise spin forever). */
   advanceTime: int => unit,
+  /* Pretend the terminal answered the OSC 11 background-color query with
+     this (r, g, b), 0..255 per channel - the testing seam for
+     Hooks.useTerminalBackground, which is otherwise None forever in a
+     headless run (nothing here sends the query, and there is no terminal to
+     answer it). Re-renders once, and only if the value actually changed,
+     exactly like the interactive path. */
+  setTerminalBackground: ((int, int, int)) => unit,
 };
 
 /* Helper to read an int from an environment variable with a default */
@@ -1697,6 +1704,97 @@ let drainStaticLines = (): list(string) => {
   raw @ staticLines;
 };
 
+/* ============================================================================
+ * OSC 11 background-color replies
+ * ============================================================================ */
+
+let hexDigit = (c: char): option(int) =>
+  switch (c) {
+  | '0' .. '9' => Some(Char.code(c) - Char.code('0'))
+  | 'a' .. 'f' => Some(Char.code(c) - Char.code('a') + 10)
+  | 'A' .. 'F' => Some(Char.code(c) - Char.code('A') + 10)
+  | _ => None
+  };
+
+/* One component of an X color specification, scaled to 0..255.
+ *
+ * THE XTERM CONVENTION: the number of hex DIGITS is the precision, and the
+ * value is a fraction of full intensity at that precision - so "f", "ff",
+ * "fff" and "ffff" all mean 255, and a 4-digit "1e1e" means 0x1e, not
+ * 0x1e1e. The scaling that gets every width right is
+ * v * 255 / (16^digits - 1). 1 to 4 digits are accepted; anything else, or
+ * a non-hex digit, is None. */
+let hexComponent = (s: string): option(int) => {
+  let n = String.length(s);
+  if (n < 1 || n > 4) {
+    None;
+  } else {
+    let acc = ref(Some(0));
+    String.iter(
+      c =>
+        switch (acc^, hexDigit(c)) {
+        | (Some(a), Some(v)) => acc := Some(a * 16 + v)
+        | _ => acc := None
+        },
+      s,
+    );
+    switch (acc^) {
+    | None => None
+    | Some(v) =>
+      let maxv = ref(1);
+      for (_ in 1 to n) {
+        maxv := maxv^ * 16;
+      };
+      Some(v * 255 / (maxv^ - 1));
+    };
+  };
+};
+
+/* Parse an OSC 11 payload into (r, g, b), 0..255 per channel.
+ *
+ * Accepts the X form every xterm-compatible terminal answers with,
+ * "rgb:RRRR/GGGG/BBBB" (1-4 hex digits per component - see hexComponent),
+ * and the "#RRGGBB" form some terminals use instead. Anything else - a
+ * different color space, the wrong component count, trailing junk - yields
+ * None, and the caller ignores the report. */
+let parseOscColor = (payload: string): option((int, int, int)) => {
+  let p = String.trim(payload);
+  let len = String.length(p);
+  if (len > 4 && String.sub(p, 0, 4) == "rgb:") {
+    switch (String.split_on_char('/', String.sub(p, 4, len - 4))) {
+    | [rs, gs, bs] =>
+      switch (hexComponent(rs), hexComponent(gs), hexComponent(bs)) {
+      | (Some(r), Some(g), Some(b)) => Some((r, g, b))
+      | _ => None
+      }
+    | _ => None
+    };
+  } else if (len == 7 && p.[0] == '#') {
+    let two = i => hexComponent(String.sub(p, i, 2));
+    switch (two(1), two(3), two(5)) {
+    | (Some(r), Some(g), Some(b)) => Some((r, g, b))
+    | _ => None
+    };
+  } else {
+    None;
+  };
+};
+
+/* Handle one OscReport. Only OSC 11 (background color) means anything to the
+ * runtime; every other code, and every payload that does not parse, is
+ * ignored outright. Returns true when the value CHANGED and the caller
+ * should therefore mark the root dirty - exactly one extra frame, and only
+ * when there is genuinely something new to render. */
+let applyOscReport = (code: int, payload: string): bool =>
+  if (code != 11) {
+    false;
+  } else {
+    switch (parseOscColor(payload)) {
+    | Some(rgb) => Hooks.setTerminalBackground(Hooks.instance(), rgb)
+    | None => false
+    };
+  };
+
 /* Deliver every event InputDecoder produced from one read (or one flush)
  * to the application, in order. Shared by both interactive loops (`start`
  * and `startHeadlessLoop`) - the headless handle's sendKey/sendPaste
@@ -1721,6 +1819,12 @@ let drainStaticLines = (): list(string) => {
  *   application key handlers. `start` passes ~onCursor to feed its bottomRow
  *   ref; loops that don't track the cursor (the headless one) leave it out
  *   and the report is dropped.
+ * - OscReport: an OSC string reply - terminal plumbing, like CursorReport,
+ *   and never dispatched to application key handlers. OSC 11 (the
+ *   background-color probe Runtime.start sends at startup) updates the
+ *   instance's terminalBg and marks the root dirty IF the value changed, so
+ *   an application using Hooks.useTerminalBackground repaints itself with
+ *   the right theme exactly once. Every other OSC code is ignored.
  *
  * ~flushDirty re-renders NOW if a previous event's handler left the app
  * dirty; it is called before every dispatch. Without it, two keystrokes
@@ -1755,6 +1859,10 @@ let deliverAll =
         switch (onCursor) {
         | Some(f) => f(row, col)
         | None => ()
+        }
+      | InputDecoder.OscReport(code, payload) =>
+        if (applyOscReport(code, payload)) {
+          ctx.needsRerender = true;
         }
       };
     },
@@ -2112,6 +2220,12 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
       print_string(dsrQuery);
       flush(stdout);
     };
+    /* Ask the terminal for its BACKGROUND COLOR, once, at startup. This is
+     * mode-independent - unlike the DSR query above, it says nothing about
+     * where the cursor is - so Fullscreen sends it too. Fire-and-forget: see
+     * Terminal.queryBackground. The reply comes back through the same input
+     * stream as the DSR one and is routed by deliverAll. */
+    Terminal.queryBackground();
     let myInstance = Hooks.instance();
     at_exit(() => {
       /* Run effect cleanups (of this run's own instance) before exit */
@@ -2612,6 +2726,14 @@ let startHeadless =
     getFocusedId: () => {
       activate();
       Hooks.instance().focus.focusedId;
+    },
+
+    setTerminalBackground: rgb => {
+      activate();
+      if (Hooks.setTerminalBackground(myInstance, rgb)) {
+        ctx.needsRerender = true;
+        ignore(doRender());
+      };
     },
   };
 };

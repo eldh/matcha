@@ -94,6 +94,13 @@ type t = {
    * and a real terminal answers with the cursor where the query found it,
    * not where the frame left it. */
   mutable dsrRequestsRev: list((int, int)),
+  /* OSC strings seen since the last drain, most recent first, as
+   * (numeric code, payload). These are IMPLEMENTED, not unknown: a real
+   * terminal consumes an OSC without touching the grid, and some of them
+   * (OSC 11 with a "?" value - the background-color probe) are queries a
+   * harness has to answer. Recording them in unknownRev instead would make
+   * every "the runtime emits nothing the model does not know" audit fail. */
+  mutable oscRev: list((int, string)),
   /* Escape sequences the model does not implement, most recent first. */
   mutable unknownRev: list(string),
   /* Bytes of an escape sequence (or a UTF-8 character) that was cut in half
@@ -123,6 +130,7 @@ let create = (~width: int, ~height: int): t => {
     bracketedPaste: false,
     mouseReporting: false,
     dsrRequestsRev: [],
+    oscRev: [],
     unknownRev: [],
     partial: "",
   };
@@ -268,6 +276,40 @@ let printGlyph = (t: t, bytes: string, w: int): unit =>
 
 let recordUnknown = (t: t, seq: string): unit =>
   t.unknownRev = [seq, ...t.unknownRev];
+
+/* Consume one complete OSC string.
+ *
+ * [raw] is the whole sequence INCLUDING the ESC-] introducer and its
+ * terminator (BEL, or ST - that is, ESC followed by a backslash). The grid
+ * is untouched - that
+ * is what a real terminal does with an OSC - and the (code, payload) pair is
+ * recorded for [takeOscQueries]. A body with no ';', or with a non-numeric
+ * code, is not something any writer sends on purpose, so it goes to the
+ * unknown log instead. */
+let recordOsc = (t: t, raw: string): unit => {
+  let len = String.length(raw);
+  /* The ESC-] introducer is two bytes; the terminator is one (BEL) or two
+   * (ESC then backslash). */
+  let bodyEnd =
+    if (len >= 3 && raw.[len - 1] == '\007') {
+      len - 1;
+    } else if (len >= 4 && raw.[len - 2] == '\027' && raw.[len - 1] == '\\') {
+      len - 2;
+    } else {
+      len;
+    };
+  let body = bodyEnd > 2 ? String.sub(raw, 2, bodyEnd - 2) : "";
+  switch (String.index_opt(body, ';')) {
+  | Some(j) =>
+    let codeStr = String.sub(body, 0, j);
+    let payload = String.sub(body, j + 1, String.length(body) - j - 1);
+    switch (int_of_string_opt(codeStr)) {
+    | Some(code) => t.oscRev = [(code, payload), ...t.oscRev]
+    | None => recordUnknown(t, raw)
+    };
+  | None => recordUnknown(t, raw)
+  };
+};
 
 /* Split a CSI parameter string into ints. An empty parameter means "use the
  * default", represented here as 0 - every caller applies its own default via
@@ -418,19 +460,39 @@ let handleCsi = (t: t, ~priv: string, ~params: string, ~final: char, ~raw: strin
     }
   | ("", 'm') =>
     /* SGR. No colour modeling: 0 (or an empty parameter list) resets to [],
-     * anything else appends to the current list. */
+     * anything else appends to the current list.
+     *
+     * The one piece of real parsing needed here is the EXTENDED COLOUR
+     * introducer. As far as SGR is concerned, "38;5;n" / "48;5;n" (256
+     * colour) and "38;2;r;g;b" / "48;2;r;g;b" (24-bit direct colour) are
+     * each ONE indivisible parameter, and their sub-parameters are not SGR
+     * codes at all. Reading them as ordinary parameters would let a zero
+     * channel - "48;2;0;40;8", a dark green tint - be taken for an SGR 0 and
+     * reset every attribute on the row, which is not what a terminal does.
+     * A truncated introducer simply takes whatever parameters are left. */
     if (Array.length(ps) == 0) {
       t.sgr = [];
     } else {
-      Array.iter(
-        n =>
-          if (n == 0) {
-            t.sgr = [];
-          } else {
-            t.sgr = t.sgr @ [n];
-          },
-        ps,
-      );
+      let n = Array.length(ps);
+      let i = ref(0);
+      while (i^ < n) {
+        let p = ps[i^];
+        if (p == 38 || p == 48) {
+          let kind = i^ + 1 < n ? ps[i^ + 1] : (-1);
+          let span = kind == 5 ? 3 : kind == 2 ? 5 : 1;
+          let stop = min(n, i^ + span);
+          for (k in i^ to stop - 1) {
+            t.sgr = t.sgr @ [ps[k]];
+          };
+          i := stop;
+        } else if (p == 0) {
+          t.sgr = [];
+          incr(i);
+        } else {
+          t.sgr = t.sgr @ [p];
+          incr(i);
+        };
+      };
     }
   | ("", 'n') =>
     if (paramZ(ps, 0) == 6) {
@@ -521,8 +583,9 @@ let feed = (t: t, chunk: string): unit => {
               step(j^ + 1);
             };
           | ']' =>
-            /* OSC: terminated by BEL or by ST (ESC \). Nothing Matcha emits
-             * uses OSC, so it is consumed and recorded. */
+            /* OSC: terminated by BEL or by ST (ESC \). Consumed without
+             * touching the grid and recorded as a (code, payload) query -
+             * see [recordOsc] and [takeOscQueries]. */
             let rec findEnd = k =>
               if (k >= len) {
                 (-1);
@@ -539,7 +602,7 @@ let feed = (t: t, chunk: string): unit => {
             if (e < 0) {
               t.partial = String.sub(s, i, len - i);
             } else {
-              recordUnknown(t, String.sub(s, i, e - i));
+              recordOsc(t, String.sub(s, i, e - i));
               step(e);
             };
           | other =>
@@ -671,6 +734,17 @@ let takeDsrRequests = (t: t): int => {
 let takeDsrReplies = (t: t): list((int, int)) => {
   let l = List.rev(t.dsrRequestsRev);
   t.dsrRequestsRev = [];
+  l;
+};
+
+/* OSC strings seen since the last drain, OLDEST FIRST, as (code, payload),
+ * and reset. A harness answers the queries among them the way a terminal
+ * would - Pty.absorb replies to OSC 11 (background color) - and a test can
+ * assert on them directly ("the runtime probed the background exactly
+ * once"). */
+let takeOscQueries = (t: t): list((int, string)) => {
+  let l = List.rev(t.oscRev);
+  t.oscRev = [];
   l;
 };
 

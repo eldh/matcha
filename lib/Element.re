@@ -50,6 +50,7 @@
 /* Color type for terminal colors.
  * Named colors map to the 16 standard ANSI colors (0-15).
  * Rgb maps to the 216-color cube (16-231).
+ * RgbFull is 24-bit direct color (truecolor), emitted as SGR 38;2/48;2.
  */
 type color =
   | Black
@@ -68,7 +69,8 @@ type color =
   | BrightMagenta
   | BrightCyan
   | BrightWhite
-  | Rgb(int, int, int); /* RGB values 0-5 each, maps to 216-color cube */
+  | Rgb(int, int, int) /* RGB values 0-5 each, maps to 216-color cube */
+  | RgbFull(int, int, int); /* 24-bit truecolor, 0-255 each (clamped at emission) */
 
 /* Text styling options.
  * These map to ANSI escape codes for terminal formatting.
@@ -334,7 +336,17 @@ let inverted = (el: t): t => Styled(Inverted, el);
  * ANSI Escape Code Utilities
  * ============================================================================ */
 
-/* Convert a color to its 256-color code. */
+/* Clamp a truecolor channel into 0..255. */
+let clampChannel = (v: int): int => max(0, min(255, v));
+
+/* Convert a color to its 256-color code.
+ *
+ * [RgbFull] has no 256-color code at all - it is emitted as a DIRECT-color
+ * (24-bit) SGR by [styleToAnsi] and never reaches this function on the
+ * emission path. For callers that need a palette index anyway, it is
+ * down-sampled into the nearest cell of the 216-color cube. That is lossy on
+ * purpose: use [styleToAnsi] if you want the exact color.
+ */
 let colorToCode = (c: color): int => {
   switch (c) {
   | Black => 0
@@ -357,8 +369,30 @@ let colorToCode = (c: color): int => {
     /* Clamp values to 0-5 range and convert to 216-color cube index */
     let clamp = v => max(0, min(5, v));
     16 + 36 * clamp(r) + 6 * clamp(g) + clamp(b);
+  | RgbFull(r, g, b) =>
+    /* Lossy fallback (see the doc comment): 0..255 -> the nearest 0..5 cube
+     * axis, rounded rather than truncated. */
+    let cube = v => (clampChannel(v) * 5 + 127) / 255;
+    16 + 36 * cube(r) + 6 * cube(g) + cube(b);
   };
 };
+
+/* The SGR parameters that select [c], WITHOUT the leading 38 (foreground) or
+ * 48 (background) that says which slot it goes in:
+ *   "5;<n>"         - a 256-color palette index (named colors and [Rgb])
+ *   "2;<r>;<g>;<b>" - 24-bit direct color ([RgbFull]), channels clamped 0..255
+ */
+let colorParams = (c: color): string =>
+  switch (c) {
+  | RgbFull(r, g, b) =>
+    Printf.sprintf(
+      "2;%d;%d;%d",
+      clampChannel(r),
+      clampChannel(g),
+      clampChannel(b),
+    )
+  | _ => Printf.sprintf("5;%d", colorToCode(c))
+  };
 
 /* Convert a style to its ANSI escape code. */
 let styleToAnsi = (style: style): string => {
@@ -368,8 +402,8 @@ let styleToAnsi = (style: style): string => {
   | Italic => "\027[3m"
   | Underline => "\027[4m"
   | Inverted => "\027[7m"
-  | FgColor(c) => Printf.sprintf("\027[38;5;%dm", colorToCode(c))
-  | BgColor(c) => Printf.sprintf("\027[48;5;%dm", colorToCode(c))
+  | FgColor(c) => "\027[38;" ++ colorParams(c) ++ "m"
+  | BgColor(c) => "\027[48;" ++ colorParams(c) ++ "m"
   };
 };
 

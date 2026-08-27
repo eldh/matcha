@@ -83,6 +83,15 @@ let brightCyan = Element.BrightCyan;
 let brightWhite = Element.BrightWhite;
 let rgb = (r, g, b) => Element.Rgb(r, g, b);
 
+/* 24-bit truecolor: channels 0..255, emitted as SGR 38;2/48;2. `rgb` above
+ * stays the 216-color cube (channels 0..5). */
+let rgbFull = (r, g, b) => Element.RgbFull(r, g, b);
+
+/* The terminal's own background color, once it has told us. See
+ * Hooks.useTerminalBackground - None until (and unless) the terminal
+ * answers Matcha's OSC 11 query at startup. */
+let useTerminalBackground = Hooks.useTerminalBackground;
+
 /* Box drawing utilities */
 module BoxChars = Element.BoxChars; /* Box drawing chars: ┌ ┐ └ ┘ ─ │ */
 

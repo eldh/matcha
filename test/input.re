@@ -34,6 +34,9 @@ let feedBytes = (handle: Runtime.headlessHandle, s: string): unit => {
     | InputDecoder.PasteEvent(text) => handle.sendPaste(text)
     | InputDecoder.MouseEvent(ev) => handle.sendMouse(ev)
     | InputDecoder.CursorReport(_, _) => () /* interactive-loop only */
+    /* An OSC 11 background reply is routed by the interactive loop too; the
+     * handle's own setTerminalBackground is the headless equivalent. */
+    | InputDecoder.OscReport(_, _) => ()
     };
   let bytes = Bytes.of_string(s);
   List.iter(deliver, InputDecoder.feed(decoder, bytes, Bytes.length(bytes)));

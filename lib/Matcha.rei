@@ -213,8 +213,8 @@ let useStdout: unit => Hooks.stdoutHandle;
  * Colors
  * ============================================================================ */
 
-/** Terminal color: one of the 16 named ANSI colors, or [Rgb] into the
-    216-color cube. */
+/** Terminal color: one of the 16 named ANSI colors, [Rgb] into the
+    216-color cube, or [RgbFull] 24-bit direct color. */
 
 type color = Element.color;
 
@@ -238,6 +238,32 @@ let brightWhite: Element.color;
 /** [rgb(r, g, b)] with each component in 0..5, mapped to the 216-color cube. */
 
 let rgb: (int, int, int) => Element.color;
+
+/** [rgbFull(r, g, b)] with each component in 0..255: 24-bit direct color,
+    emitted as the SGR sequences [38;2;r;g;b] / [48;2;r;g;b] and clamped into
+    range at emission. [rgb] above remains the 216-color cube (0..5 per
+    channel) and is the safer choice on a terminal of unknown vintage;
+    [rgbFull] needs a truecolor-capable one. */
+
+let rgbFull: (int, int, int) => Element.color;
+
+/* ============================================================================
+ * Theme detection
+ * ============================================================================ */
+
+/** The terminal's own background color as [(r, g, b)] with 0..255 per
+    channel, or [None].
+
+    [Runtime.start] asks the terminal for it once at startup (an OSC 11
+    query); when the reply arrives the application re-renders exactly once
+    with the new value. Plenty of terminals never answer - and no headless
+    run ever does - so [None] is a permanent possibility and every caller
+    needs a default. Most pick "assume dark".
+
+    In a headless test, [headlessHandle.setTerminalBackground] supplies the
+    value the terminal would have. */
+
+let useTerminalBackground: unit => option((int, int, int));
 
 /* ============================================================================
  * String and drawing utilities
@@ -282,7 +308,10 @@ type headlessConfig = Runtime.headlessConfig;
     [useStdout] have committed, accumulated across frames), [render],
     [resize], [getSize], [isRunning], [quit], [advanceTime] (fake-clock
     control for [useInterval]/[useTimeout]), [getFocusedId] (the id
-    [useFocus] currently owns, if any). */
+    [useFocus] currently owns, if any), [setTerminalBackground] (supply the
+    [(r, g, b)] a real terminal would have answered Matcha's OSC 11 query
+    with, so a [useTerminalBackground] theme can be exercised headlessly -
+    re-renders once, and only when the value changed). */
 
 type headlessHandle = Runtime.headlessHandle;
 

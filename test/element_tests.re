@@ -65,4 +65,77 @@ let run = () => {
       Test.assertEqual(List.length(lines), 3, "three lines");
     });
   });
+
+  Test.group("Element: color emission (styleToAnsi)", () => {
+    Test.run("named colors still emit a 256-color index", () =>
+      /* Pinned because RgbFull's arrival rewrote styleToAnsi: everything
+         that is NOT truecolor must come out byte-for-byte as before. */
+      {
+        Test.assertEqualStr(
+          Element.styleToAnsi(Element.FgColor(Element.Red)),
+          "\027[38;5;1m",
+          "red foreground",
+        );
+        Test.assertEqualStr(
+          Element.styleToAnsi(Element.BgColor(Element.BrightWhite)),
+          "\027[48;5;15m",
+          "bright white background",
+        );
+        Test.assertEqualStr(
+          Element.styleToAnsi(Element.BgColor(Element.Rgb(0, 1, 0))),
+          "\027[48;5;22m",
+          "the 216-cube Rgb is unchanged too",
+        );
+      }
+    );
+
+    Test.run("RgbFull foreground emits 38;2;r;g;b", () =>
+      Test.assertEqualStr(
+        Element.styleToAnsi(Element.FgColor(Element.RgbFull(12, 200, 255))),
+        "\027[38;2;12;200;255m",
+        "24-bit direct color, foreground slot",
+      )
+    );
+
+    Test.run("RgbFull background emits 48;2;r;g;b", () =>
+      Test.assertEqualStr(
+        Element.styleToAnsi(Element.BgColor(Element.RgbFull(0, 40, 8))),
+        "\027[48;2;0;40;8m",
+        "24-bit direct color, background slot",
+      )
+    );
+
+    Test.run("channels are clamped into 0..255 at emission", () => {
+      Test.assertEqualStr(
+        Element.styleToAnsi(Element.FgColor(Element.RgbFull(-5, 300, 128))),
+        "\027[38;2;0;255;128m",
+        "below 0 clamps to 0, above 255 clamps to 255",
+      );
+      Test.assertEqualStr(
+        Element.styleToAnsi(Element.BgColor(Element.RgbFull(999, -1, -1000))),
+        "\027[48;2;255;0;0m",
+        "clamping applies per channel, in the background slot too",
+      );
+    });
+
+    Test.run("colorToCode down-samples RgbFull into the 216-cube", () => {
+      /* Lossy fallback for callers that need a palette index; NOT the
+         emission path. Pure black and pure white are the two ends. */
+      Test.assertEqual(
+        Element.colorToCode(Element.RgbFull(0, 0, 0)),
+        16,
+        "black is the first cube cell",
+      );
+      Test.assertEqual(
+        Element.colorToCode(Element.RgbFull(255, 255, 255)),
+        231,
+        "white is the last cube cell",
+      );
+      Test.assertEqual(
+        Element.colorToCode(Element.RgbFull(255, 0, 0)),
+        Element.colorToCode(Element.Rgb(5, 0, 0)),
+        "full red lands on the same cube cell as Rgb(5, 0, 0)",
+      );
+    });
+  });
 };

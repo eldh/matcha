@@ -24,6 +24,10 @@
  *   many bytes of the "\027[201~" terminator have been matched so far
  *   against the incoming stream (0..5 - a full 6-byte match ends the
  *   paste immediately, so 6 is never stored).
+ * - Osc(buf, sawEsc): inside an OSC string (started by `ESC ]`), collecting
+ *   the body until BEL or ST (`ESC \`). `sawEsc` remembers that the previous
+ *   byte was an ESC, which is only half of an ST until the next byte says
+ *   otherwise.
  *
  * Every terminal escape sequence Key.re already knows how to parse is
  * routed back through `Key.parse` once this module has found where it
@@ -34,18 +38,27 @@
 /* Events produced by `feed`/`flush`. CursorReport is the decoder's own
  * framing of a DSR cursor-position response (`ESC[row;colR`, exactly two
  * params) - Runtime consumes it for mouse coordinate bookkeeping (B4/A4)
- * and it is never dispatched to application key handlers. */
+ * and it is never dispatched to application key handlers.
+ *
+ * OscReport(code, payload) is the same kind of thing one level up: an OSC
+ * string reply (`ESC ] code ; payload BEL`, or with an `ESC \` terminator),
+ * split at the first ';'. Runtime consumes OSC 11 - the terminal's
+ * background color - and ignores the rest. Like CursorReport, this is
+ * terminal plumbing and is NEVER dispatched to application key handlers;
+ * Key.t deliberately has no constructor for it. */
 type event =
   | KeyEvent(Key.t, Key.modifiers)
   | PasteEvent(string)
   | MouseEvent(Mouse.event)
-  | CursorReport(int, int);
+  | CursorReport(int, int)
+  | OscReport(int, string);
 
 /* Internal decoder state - see the module doc comment above. */
 type state =
   | Ground
   | Esc(Buffer.t)
-  | Paste(Buffer.t, int);
+  | Paste(Buffer.t, int)
+  | Osc(Buffer.t, bool);
 
 type t = {
   mutable state,
@@ -76,7 +89,11 @@ let create = (~maxPasteBytes: int=1_000_000, ()): t => {
 let pendingEsc = (t: t): bool =>
   switch (t.state) {
   | Esc(_) => true
+  /* Osc is deliberately NOT "a pending escape": an OSC reply that straddles
+   * two reads must be allowed to finish, and shortening the select timeout
+   * would only make the loop flush (and discard) it sooner. */
   | Ground
+  | Osc(_, _)
   | Paste(_, _) => false
   };
 
@@ -168,6 +185,27 @@ let completeCsi = (t: t, body: string, emit: event => unit): unit => {
   };
 };
 
+/* An OSC string has ended (BEL or ST). `body` is everything between the
+ * `ESC ]` introducer and the terminator, neither included.
+ *
+ * The wire form is "<numeric code>;<payload>"; the split is at the FIRST
+ * ';' only, because a payload may contain more of them. A body with no ';'
+ * at all, or whose code is not a number, is not something any terminal
+ * sends as a reply - it is dropped rather than guessed at. */
+let completeOsc = (t: t, body: string, emit: event => unit): unit => {
+  switch (String.index_opt(body, ';')) {
+  | Some(i) =>
+    let codeStr = String.sub(body, 0, i);
+    let payload = String.sub(body, i + 1, String.length(body) - i - 1);
+    switch (int_of_string_opt(codeStr)) {
+    | Some(code) => emit(OscReport(code, payload))
+    | None => ()
+    };
+  | None => ()
+  };
+  t.state = Ground;
+};
+
 /* Force-flush whatever is held in an Esc buffer through Key.parse and
  * return to Ground - used both for the 64-byte cap and by `flush` below. */
 let flushEscBuffer = (t: t, buf: Buffer.t, emit: event => unit): unit => {
@@ -188,6 +226,11 @@ let rec handleEsc = (t: t, buf: Buffer.t, emit: event => unit, byte: char): unit
       Buffer.add_char(buf, byte);
     } else if (byte == 'O') {
       Buffer.add_char(buf, byte);
+    } else if (byte == ']') {
+      /* OSC introducer. Not Alt+']' - no terminal sends that as a key, and
+       * every OSC reply (the background-color probe, title queries, ...)
+       * starts exactly here. */
+      t.state = Osc(Buffer.create(32), false);
     } else if (code == 0x1B) {
       /* A second ESC before anything else resolved: the first one was a
        * lone ESC on its own - emit it as Escape - and stay in Esc holding
@@ -248,7 +291,34 @@ let rec handleEsc = (t: t, buf: Buffer.t, emit: event => unit, byte: char): unit
   | Esc(buf2) when Buffer.length(buf2) > 64 => flushEscBuffer(t, buf2, emit)
   | Ground
   | Esc(_)
+  | Osc(_, _)
   | Paste(_, _) => ()
+  };
+}
+
+/* Handle one byte while state == Osc(buf, sawEsc). The body is collected
+ * verbatim until a terminator: BEL (0x07), or ST written as `ESC \`. An ESC
+ * that turns out NOT to be followed by '\' is body content after all, so it
+ * is appended and the byte that disproved it is reprocessed in this state. */
+and handleOscByte =
+    (t: t, buf: Buffer.t, sawEsc: bool, emit: event => unit, byte: char)
+    : unit => {
+  let code = Char.code(byte);
+  if (sawEsc) {
+    if (byte == '\\') {
+      completeOsc(t, Buffer.contents(buf), emit);
+    } else {
+      Buffer.add_char(buf, '\027');
+      t.state = Osc(buf, false);
+      handleOscByte(t, buf, false, emit, byte);
+    };
+  } else if (code == 0x07) {
+    completeOsc(t, Buffer.contents(buf), emit);
+  } else if (code == 0x1B) {
+    t.state = Osc(buf, true);
+  } else {
+    Buffer.add_char(buf, byte);
+    t.state = Osc(buf, false);
   };
 }
 
@@ -349,6 +419,7 @@ and processByte = (t: t, emit: event => unit, byte: char): unit =>
   switch (t.state) {
   | Ground => handleGround(t, emit, byte)
   | Esc(buf) => handleEsc(t, buf, emit, byte)
+  | Osc(buf, sawEsc) => handleOscByte(t, buf, sawEsc, emit, byte)
   | Paste(buf, matched) => handlePasteByte(t, buf, matched, emit, byte)
   };
 
@@ -374,6 +445,14 @@ let feed = (t: t, bytes: bytes, len: int): list(event) => {
  * - Paste: no-op. A paste can only end at its terminator; there is
  *   nothing sensible to emit from a partial one, so flush leaves it
  *   exactly as it was, waiting for more input.
+ * - Osc: no-op too, and specifically NOT the Esc treatment. An unterminated
+ *   OSC is DISCARDED rather than replayed through Key.parse: a held
+ *   "ESC ] 1 1 ; r g b : ..." prefix is not a key sequence, and pushing it
+ *   through would spray a dozen bogus Alt-key events at the application.
+ *   The accumulation is left in place (like Paste) so an OSC reply split
+ *   across a flush boundary can still complete on the next feed - and note
+ *   that pendingEsc is false in this state, so Runtime's own flush trigger
+ *   never fires here in the first place.
  * - Ground with a dangling partial UTF-8 lead: best-effort Key.parse of
  *   whatever bytes were collected (this only matters if a program calls
  *   flush() directly; Runtime's own flush trigger - the pendingEsc-driven
@@ -384,6 +463,7 @@ let flush = (t: t): list(event) => {
   let emit = (e: event) => events := [e, ...events^];
   switch (t.state) {
   | Esc(buf) => flushEscBuffer(t, buf, emit)
+  | Osc(_, _)
   | Paste(_, _) => ()
   | Ground =>
     if (Buffer.length(t.utf8Buf) > 0) {
