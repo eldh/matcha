@@ -166,7 +166,7 @@ dune exec matcha-example-counter
 | `<Sized>` | Wraps a single child to give it an explicit size within a parent Stack. |
 | `<TextArea>` | Multi-line, controlled text editor with cursor/selection state. |
 | `<Static>` | Append-only output committed above the live region, into scrollback. |
-| `<ScrollView>` | Scrolling window onto content taller than its box. |
+| `<ScrollView>` | Scrolling window onto content taller than its box; `~rows` virtualizes very long pre-rendered content. |
 | `<Clickable>` | Runs a callback when its box is clicked. |
 
 `Fragment` (groups children without adding a Stack) lives at `Element.Fragment`
@@ -315,10 +315,27 @@ yourself and take the clamped position back through `~onScroll`:
 </Sized>
 ```
 
-Props: `offset` (`int`), `onScroll` (`int => unit`), `showScrollbar`
-(`bool`, default `true`), `focusable` (`bool`, default `true`), `id`
-(`string`, its focus id), `mouse` (`bool`, default `true` — wheel handling).
-See `examples/scroll-demo`.
+For **very long** content — a log, a syntax-highlighted diff, tens of
+thousands of lines — pass `~rows` instead of children. Clipping a rendered
+child means parsing all of it every frame (a style opened above the window
+has to be re-opened on the first visible row), so the ordinary mode costs
+O(total content); `~rows` takes content the application already holds as one
+pre-rendered string per row, ignores the child, and touches only the visible
+rows, so a frame costs O(viewport). Each row must be **self-contained**: it
+opens the styles it needs and inherits nothing from the row above — that
+independence is exactly what lets the runtime start at row N without reading
+rows 0..N-1. The array is re-read every frame, so mutating it in place is
+fine. Write it self-closing:
+
+```
+<Sized size={Flex(1)}> <ScrollView id="log" rows=myRows /> </Sized>
+```
+
+Props: `rows` (`array(string)`, the virtualized mode above), `offset`
+(`int`), `onScroll` (`int => unit`), `showScrollbar` (`bool`, default
+`true`), `focusable` (`bool`, default `true`), `id` (`string`, its focus
+id), `mouse` (`bool`, default `true` — wheel handling). See
+`examples/scroll-demo`.
 
 **Clickable** — fires `onClick` when the left button goes down anywhere in
 the box its parent allocated it. The innermost Clickable under the pointer

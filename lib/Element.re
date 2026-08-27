@@ -121,7 +121,7 @@ type stackOptions = {
 };
 
 /* Options of a [Viewport] node (see [t] below) - the scroll primitive
- * <ScrollView> builds on. All three fields are filled in by ScrollView; an
+ * <ScrollView> builds on. Every field is filled in by ScrollView; an
  * application never constructs this record by hand.
  *
  * - vpOffset: the FIRST content line to show, in rows. It is a request, not
@@ -134,11 +134,33 @@ type stackOptions = {
  * - vpOnViewport: called with (contentHeight, viewportHeight) on the
  *   COMMITTED pass only, exactly once per painted frame. This is how
  *   ScrollView learns how far it may scroll; it must therefore write to a
- *   ref, never to state - it fires DURING the render. */
+ *   ref, never to state - it fires DURING the render.
+ * - vpRows: the VIRTUALIZED content mode, and the reason it exists.
+ *
+ *   None (the default) is the ordinary mode: the content is the Viewport's
+ *   CHILD, rendered whole and then clipped. Clipping an already-rendered
+ *   multi-line ANSI string means PARSING all of it cell by cell (a style
+ *   opened above the window has to be re-opened on the first visible row),
+ *   so a frame costs O(total content), not O(viewport) - fine for tens of
+ *   rows, ruinous for tens of thousands.
+ *
+ *   Some(rows) says "I already hold my content as one pre-baked styled
+ *   string per row". The CHILD IS THEN IGNORED (pass [Empty] by
+ *   convention) and content height is [Array.length(rows)]. Only the
+ *   visible rows are ever touched, so the frame costs O(viewport).
+ *
+ *   THE CONTRACT, and it is not checked: every row must be SELF-CONTAINED -
+ *   it opens whatever SGR state it needs and does not rely on styling left
+ *   open by the row above it. That independence is exactly what lets the
+ *   runtime jump straight to row N without reading rows 0..N-1, and a row
+ *   that breaks it renders unstyled whenever the window starts below it.
+ *   The array is read fresh every frame, so an application may mutate rows
+ *   in place (a lazily-highlighted diff, say) without rebuilding it. */
 type viewportOptions = {
   vpOffset: int,
   vpShowScrollbar: bool,
   vpOnViewport: option(((int, int)) => unit),
+  vpRows: option(array(string)),
 };
 
 /* Component instance identifier - defined here for Element, but also used by Hooks.
@@ -215,6 +237,10 @@ type t =
    * child is rendered at its NATURAL height and the window keeps only the
    * rows [vpOffset, vpOffset + viewportHeight), padded to the viewport's
    * width, with an optional scrollbar column on the right.
+   *
+   * When [options.vpRows] is Some, the child is ignored entirely and the
+   * content is that array of pre-baked rows instead - see [viewportOptions]
+   * for the mode and the row-independence contract it rests on.
    *
    * Its natural size is its CONTENT's size - the "like a div" rule - so a
    * Viewport only ever scrolls when something above it caps its height:
@@ -559,11 +585,15 @@ let rec render = (el: t): string => {
   | WrappedText(_mode, child) =>
     /* No layout width here (see [t]'s WrappedText doc) - pass through. */
     render(child)
-  | Viewport(child, _options) =>
+  | Viewport(child, options) =>
     /* No layout height here (see [t]'s Viewport doc), and a scroller's
-     * natural size IS its content, so an unclipped child is the right
-     * answer for a detached render. */
-    render(child)
+     * natural size IS its content, so the UNCLIPPED content is the right
+     * answer for a detached render - the rows, joined, when the viewport is
+     * in rows mode, and otherwise the child. */
+    switch (options.vpRows) {
+    | Some(rows) => String.concat("\n", Array.to_list(rows))
+    | None => render(child)
+    }
   | Static(_items) =>
     /* Nothing. A Static node's output does not belong to the string its
      * parent is building - it is committed above the live region by the

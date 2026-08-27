@@ -182,6 +182,7 @@ module RawViewportApp = {
              Element.vpOffset: 2,
              vpShowScrollbar: false,
              vpOnViewport: Some(m => vpCalls := [m, ...vpCalls^]),
+             vpRows: None,
            },
          )}
       </Sized>
@@ -241,6 +242,138 @@ module ClickableInScrollApp = {
             )}
       </VStack>
     </ScrollView>;
+};
+
+/* ============================================================================
+ * 8. ROWS MODE (the virtualized content mode)
+ *
+ * <ScrollView rows /> takes content the application has already rendered,
+ * one self-contained styled string per row, and never looks at the rows it
+ * is not showing. The group below pins four things:
+ *   - PARITY: the same twelve lines, once as a child VStack and once as
+ *     ~rows, must produce the SAME frame at every offset. That is the whole
+ *     claim of the mode - it is a faster route to an identical picture.
+ *   - MECHANICS: scrollbar, wheel, controlled mode, short-window padding and
+ *     over-wide-row clipping all behave as they do for a child.
+ *   - SELF-CONTAINMENT: a row that carries its own SGR keeps its colour at
+ *     every scroll position, which is what the contract buys.
+ *   - SCALE: 100_000 rows is a normal frame, not a stall.
+ * ========================================================================== */
+
+/* The same twelve lines both fixtures below render. Baked by hand for the
+   rows fixture, so that "the same lines" means the same BYTES on both
+   sides - not the same intent. */
+let parityLines: array(string) =
+  Array.init(12, i => Printf.sprintf("P%02d", i));
+
+module ParityChildApp = {
+  [@component]
+  let make = () =>
+    <VStack>
+      <Sized size={Chars(1)}> <Text> "title" </Text> </Sized>
+      <Sized size={Flex(1)}>
+        <ScrollView>
+          <VStack>
+            ...{Array.to_list(Array.map(l => <Text> l </Text>, parityLines))}
+          </VStack>
+        </ScrollView>
+      </Sized>
+    </VStack>;
+};
+
+module ParityRowsApp = {
+  [@component]
+  let make = () =>
+    <VStack>
+      <Sized size={Chars(1)}> <Text> "title" </Text> </Sized>
+      <Sized size={Flex(1)}> <ScrollView rows=parityLines /> </Sized>
+    </VStack>;
+};
+
+/* Self-closing JSX, no ~children at all - the shape the docs promise. Also
+   the fixture for the padding case: 7 rows in a 6-row window scroll to an
+   offset where only one row is left. */
+let shortRows: array(string) = Array.init(7, i => Printf.sprintf("S%02d", i));
+
+module ShortRowsApp = {
+  [@component]
+  let make = () => <ScrollView rows=shortRows />;
+};
+
+/* One row far wider than the frame, and ANSI in the middle of it. The frame
+   must never grow past its width, and the escape must survive the clip. */
+let wideRow =
+  "W"
+  ++ Element.styleToAnsi(Element.FgColor(Element.Red))
+  ++ "RED"
+  ++ Element.resetAnsi
+  ++ String.make(200, 'x');
+
+let wideRows: array(string) = [|
+  wideRow,
+  "second row",
+  "third row",
+  "fourth row",
+  "fifth row",
+  "sixth row",
+  "seventh row",
+  "eighth row",
+|];
+
+module WideRowsApp = {
+  [@component]
+  let make = () => <ScrollView rows=wideRows />;
+};
+
+/* Style self-containment: EVERY row opens its own colour and closes it. Row
+   7 is the one the assertions follow - it is off-screen at offset 0 and on
+   screen after a scroll, and its escape must appear exactly when it does. */
+let green = Element.styleToAnsi(Element.FgColor(Element.Green));
+let magenta = Element.styleToAnsi(Element.FgColor(Element.Magenta));
+
+let styledRows: array(string) =
+  Array.init(12, i =>
+    Printf.sprintf("R%02d ", i)
+    ++ (i == 7 ? magenta : green)
+    ++ "word"
+    ++ Element.resetAnsi
+  );
+
+module StyledRowsApp = {
+  [@component]
+  let make = () => <ScrollView rows=styledRows />;
+};
+
+/* Controlled rows mode: same contract as ControlledApp above, rows content. */
+let ctlRowsOffset = ref(0);
+let ctlRowsScrolls: ref(list(int)) = ref([]);
+let ctlRows: array(string) = Array.init(12, i => Printf.sprintf("D%02d", i));
+
+module ControlledRowsApp = {
+  [@component]
+  let make = () =>
+    <VStack>
+      <Sized size={Chars(1)}> <Text> "title" </Text> </Sized>
+      <Sized size={Flex(1)}>
+        <ScrollView
+          rows=ctlRows
+          offset={ctlRowsOffset^}
+          onScroll={v => ctlRowsScrolls := [v, ...ctlRowsScrolls^]}
+        />
+      </Sized>
+    </VStack>;
+};
+
+/* The scale guard. A hundred thousand rows, each styled, in a 20x6 frame:
+   the child path would parse all of it once per pass, per frame. */
+let hugeRows: array(string) =
+  Array.init(100_000, i =>
+    green ++ Printf.sprintf("H%06d", i) ++ Element.resetAnsi
+  );
+
+module HugeRowsApp = {
+  [@component]
+  let make = () => <ScrollView rows=hugeRows />;
 };
 
 /* A wheel event, which Input.clickAt has no equivalent for. */
@@ -577,6 +710,230 @@ let run = () => {
         0,
         "K03",
         "the notch over the clickable row scrolled the list",
+      );
+      handle.quit();
+    });
+  });
+
+  Test.group("ScrollView rows: parity with a child of the same content", () => {
+    Test.run("the same twelve lines paint the same frame in both modes", () => {
+      let childH =
+        Runtime.startHeadless(~config=config20x6, (module ParityChildApp));
+      let rowsH =
+        Runtime.startHeadless(~config=config20x6, (module ParityRowsApp));
+
+      let compare = (what: string) =>
+        Test.assertEqualStr(
+          String.concat("\n", Array.to_list(rowsH.getLines(true))),
+          String.concat("\n", Array.to_list(childH.getLines(true))),
+          "rows and child frames agree " ++ what,
+        );
+
+      compare("at offset 0");
+
+      childH.sendKey(Key.Arrow_down, Key.noModifiers);
+      rowsH.sendKey(Key.Arrow_down, Key.noModifiers);
+      compare("after Arrow_down");
+
+      childH.sendKey(Key.End, Key.noModifiers);
+      rowsH.sendKey(Key.End, Key.noModifiers);
+      compare("after End");
+      /* Not a vacuous comparison: End really did move both of them. */
+      assertRow(rowsH.getLines(true), 1, "P07", "End reached the last window");
+
+      childH.quit();
+      rowsH.quit();
+    });
+  });
+
+  Test.group("ScrollView rows: mechanics", () => {
+    Test.run("<ScrollView rows /> compiles and renders self-closing", () => {
+      /* The assertion that matters here is that this file COMPILES: every
+         rows fixture above is written <ScrollView rows=... /> with no
+         children at all, which only type-checks because ~children is
+         optional. The frame check just proves the element is real. */
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module ShortRowsApp));
+      assertRow(handle.getLines(true), 0, "S00", "a self-closing rows ScrollView paints");
+      handle.quit();
+    });
+
+    Test.run("the thumb sits where scrollbarMetrics says it should", () => {
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module ParityRowsApp));
+      /* 12 rows, 5-row window: thumbH = 2, at the top. */
+      Test.assertEqual(
+        ScrollView.scrollbarMetrics(~contentH=12, ~viewportH=5, ~offset=0),
+        Some((0, 2)),
+        "the geometry this frame should be drawing",
+      );
+      let lines = handle.getLines(true);
+      Test.assertEqualStr(barCell(lines, 1), thumb, "viewport row 0 is thumb");
+      Test.assertEqualStr(barCell(lines, 2), thumb, "viewport row 1 is thumb");
+      Test.assertEqualStr(barCell(lines, 3), track, "viewport row 2 is track");
+
+      handle.sendKey(Key.End, Key.noModifiers);
+      Test.assertEqual(
+        ScrollView.scrollbarMetrics(~contentH=12, ~viewportH=5, ~offset=7),
+        Some((3, 2)),
+        "at the end the thumb is flush with the bottom",
+      );
+      let lines = handle.getLines(true);
+      Test.assertEqualStr(barCell(lines, 3), track, "viewport row 2 is track");
+      Test.assertEqualStr(barCell(lines, 4), thumb, "viewport row 3 is thumb");
+      Test.assertEqualStr(barCell(lines, 5), thumb, "viewport row 4 is thumb");
+      handle.quit();
+    });
+
+    Test.run("the wheel scrolls three rows, without focus", () => {
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module ShortRowsApp));
+      assertRow(handle.getLines(true), 0, "S00", "the window starts at the top");
+      handle.sendMouse(wheelAt(~kind=Mouse.ScrollDown, ~x=2, ~y=3));
+      assertRow(handle.getLines(true), 0, "S01", "7 rows in 6: a notch clamps to offset 1");
+      handle.sendMouse(wheelAt(~kind=Mouse.ScrollUp, ~x=2, ~y=3));
+      assertRow(handle.getLines(true), 0, "S00", "and back up again");
+      handle.quit();
+    });
+
+    Test.run("controlled mode shows the prop and only reports gestures", () => {
+      ctlRowsOffset := 0;
+      ctlRowsScrolls := [];
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module ControlledRowsApp));
+      assertRow(handle.getLines(true), 1, "D00", "the prop decides what is shown");
+
+      handle.sendKey(Key.Arrow_down, Key.noModifiers);
+      Test.assertEqual(ctlRowsScrolls^, [1], "onScroll reported where it would go");
+      assertRow(handle.getLines(true), 1, "D00", "but nothing moved");
+
+      ctlRowsOffset := 20;
+      ctlRowsScrolls := [];
+      ignore(handle.render());
+      assertRow(handle.getLines(true), 1, "D07", "an out-of-range prop clamps to 7");
+      handle.sendKey(Key.Arrow_down, Key.noModifiers);
+      Test.assertEqual(
+        ctlRowsScrolls^,
+        [7],
+        "and the next gesture moves from the CLAMPED value",
+      );
+      handle.quit();
+    });
+
+    Test.run("a short final window is padded with blank rows", () => {
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module ShortRowsApp));
+      handle.sendKey(Key.End, Key.noModifiers);
+      let lines = handle.getLines(true);
+      Test.assertEqual(Array.length(lines), 6, "the window keeps all six rows");
+      assertRow(lines, 0, "S01", "7 rows in a 6-row window end at offset 1");
+      assertRow(lines, 5, "S06", "the last content row is the last frame row");
+
+      /* Now a genuinely short slice: three rows of content in a six-row
+         window leaves three blanks under them. */
+      let handle2 =
+        Runtime.startHeadless(
+          ~config=config20x6,
+          (module
+           {
+             let make = () =>
+               ScrollView.createElement(
+                 ~rows=[|"one", "two", "three"|],
+                 (),
+               );
+           }),
+        );
+      let lines2 = handle2.getLines(true);
+      Test.assertEqual(Array.length(lines2), 6, "still a six-row frame");
+      assertRow(lines2, 2, "three", "the last content row");
+      Test.assertEqualStr(
+        String.trim(lines2[3]),
+        "",
+        "and the rows below it are blank, not missing",
+      );
+      Test.assertEqualStr(String.trim(lines2[5]), "", "all the way down");
+      handle.quit();
+      handle2.quit();
+    });
+
+    Test.run("an over-wide row is clipped to the content width", () => {
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module WideRowsApp));
+      let lines = handle.getLines(true);
+      Array.iteri(
+        (i, l) =>
+          Test.assertTrue(
+            Element.visibleLength(l) <= 20,
+            "frame line "
+            ++ string_of_int(i)
+            ++ " is "
+            ++ string_of_int(Element.visibleLength(l))
+            ++ " columns wide, past the 20-column frame",
+          ),
+        lines,
+      );
+      assertRow(lines, 0, "WRED", "the row's own text is still at the front");
+      Test.assertContains(
+        handle.getOutput(false),
+        Element.styleToAnsi(Element.FgColor(Element.Red)),
+        "and the ANSI inside the surviving part of the row is kept",
+      );
+      handle.quit();
+    });
+  });
+
+  Test.group("ScrollView rows: style self-containment", () => {
+    Test.run("a row keeps its own colour at every scroll position", () => {
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module StyledRowsApp));
+      /* Row 7 is magenta; rows 0..5 (the first window) are green. */
+      Test.assertFalse(
+        Test.contains(handle.getOutput(false), magenta),
+        "row 7 is below the window, so its colour is nowhere in the frame",
+      );
+      Test.assertContains(
+        handle.getOutput(false),
+        green,
+        "the visible rows carry theirs",
+      );
+
+      handle.sendKey(Key.End, Key.noModifiers);
+      assertRow(handle.getLines(true), 0, "R06", "the last window starts at row 6");
+      Test.assertContains(
+        handle.getOutput(false),
+        magenta,
+        "row 7 is on screen now, and brought its own SGR with it - no style "
+        ++ "had to be carried across the rows above it",
+      );
+
+      handle.sendKey(Key.Home, Key.noModifiers);
+      Test.assertFalse(
+        Test.contains(handle.getOutput(false), magenta),
+        "and scrolling back off screen takes the colour with it",
+      );
+      handle.quit();
+    });
+  });
+
+  Test.group("ScrollView rows: scale", () => {
+    Test.run("100_000 rows render and scroll in well under a second", () => {
+      let t0 = Unix.gettimeofday();
+      let handle =
+        Runtime.startHeadless(~config=config20x6, (module HugeRowsApp));
+      assertRow(handle.getLines(true), 0, "H000000", "the top of a very long list");
+      handle.sendKey(Key.Arrow_down, Key.noModifiers);
+      handle.sendKey(Key.Page_down, Key.noModifiers);
+      handle.sendKey(Key.End, Key.noModifiers);
+      let elapsed = Unix.gettimeofday() -. t0;
+      assertRow(handle.getLines(true), 0, "H099994", "and End reaches the bottom");
+      /* Deliberately generous. The point is not a millisecond budget, it is
+         catching a regression to O(content) parsing - which at this size
+         costs tens of seconds, not tenths. */
+      Test.assertTrue(
+        elapsed < 1.0,
+        "first frame plus three scrolls took "
+        ++ string_of_float(elapsed)
+        ++ "s - rows mode must be O(viewport), not O(content)",
       );
       handle.quit();
     });

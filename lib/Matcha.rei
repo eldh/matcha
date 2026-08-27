@@ -157,6 +157,10 @@ module Clickable: (module type of Clickable);
     while focused, and with the wheel (innermost one under the pointer
     wins). Uncontrolled by default; pass [~offset] to drive it from the
     application and take the clamped position back through [~onScroll].
+    Pass [~rows] - an array of pre-rendered, style-self-contained rows,
+    written self-closing as [<ScrollView rows />] - for the virtualized
+    mode: the child is ignored and each frame touches only the visible
+    rows, so the cost is O(viewport) instead of O(content).
     [scrollbarMetrics] is the pure thumb geometry behind its scrollbar. */
 
 module ScrollView: (module type of ScrollView);

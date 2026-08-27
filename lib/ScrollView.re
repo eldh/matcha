@@ -13,6 +13,29 @@
  * <Sized size={Flex(n)}> or <Sized size={Chars(n)}> slot (or under any
  * parent that caps its height) to give it a window smaller than its content.
  *
+ * TWO CONTENT MODES.
+ * - CHILDREN (the default): the content is the element you nest inside. The
+ *   child is rendered whole, then clipped to the window - which means a
+ *   frame costs O(TOTAL content), because clipping a styled string has to
+ *   parse all of it to know which SGR state is open at the cut. Right for
+ *   anything from a handful of rows to a few hundred.
+ * - ~rows: an array of already-rendered rows, one string per row. The child
+ *   is then IGNORED (write <ScrollView rows />, self-closing) and only the
+ *   visible rows are ever touched, so a frame costs O(VIEWPORT) however long
+ *   the content is. Reach for it when the application already holds its
+ *   content pre-rendered and there is a lot of it - a log, a syntax-
+ *   highlighted diff, a table of tens of thousands of lines. Giving both
+ *   ~rows and children is not an error: ~rows wins.
+ *
+ * THE ROW CONTRACT, for ~rows only, and nothing checks it: each row must be
+ * SELF-CONTAINED - it opens the styles it needs and assumes nothing is left
+ * open by the row above. That is precisely what lets the runtime start
+ * painting at row N without reading rows 0..N-1; a row that inherits its
+ * colour from its predecessor will render unstyled as soon as the window
+ * starts below that predecessor. The array is re-read every frame, so
+ * mutating rows in place (filling in highlighting lazily, appending log
+ * lines) shows up on the next frame with no rebuild.
+ *
  * CONTROLLED AND UNCONTROLLED, React-input style:
  * - No ~offset: the ScrollView owns the scroll position. Keys and the wheel
  *   move it; ~onScroll, if given, is notified.
@@ -42,6 +65,7 @@
 
 type props = {
   children: Element.t,
+  rows: option(array(string)),
   offset: option(int),
   onScroll: option(int => unit),
   showScrollbar: option(bool),
@@ -181,8 +205,16 @@ let make = (props: props): Element.t => {
     );
   };
 
+  /* Nothing above this line knows which content mode is in force: focus,
+   * keys, the wheel and the clamping all work off the (contentH, viewportH)
+   * pair vpOnViewport reports, and the runtime reports it the same way in
+   * both modes. The mode shows up only here, in what is handed to the
+   * Viewport - and ~rows wins over children when both are given. */
   Element.Viewport(
-    props.children,
+    switch (props.rows) {
+    | Some(_) => Element.Empty
+    | None => props.children
+    },
     {
       vpOffset: current,
       vpShowScrollbar:
@@ -191,6 +223,7 @@ let make = (props: props): Element.t => {
         | None => true
         },
       vpOnViewport: Some(m => metrics := m),
+      vpRows: props.rows,
     },
   );
 };
@@ -198,17 +231,20 @@ let make = (props: props): Element.t => {
 let createElement =
     (
       ~key: option(string)=?,
+      ~rows: option(array(string))=?,
       ~offset: option(int)=?,
       ~onScroll: option(int => unit)=?,
       ~showScrollbar: option(bool)=?,
       ~focusable: option(bool)=?,
       ~id: option(string)=?,
       ~mouse: option(bool)=?,
-      ~children: Element.t,
+      /* Optional, so that a rows-mode ScrollView can be written
+       * self-closing - <ScrollView rows /> - exactly as <Static> is. */
+      ~children: Element.t=Element.Empty,
       (),
     )
     : Element.t => {
-  let props = {children, offset, onScroll, showScrollbar, focusable, id, mouse};
+  let props = {children, rows, offset, onScroll, showScrollbar, focusable, id, mouse};
   Element.createComponent(~key?, ~typeId=componentTypeId, props, () =>
     make(props)
   );

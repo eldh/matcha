@@ -553,9 +553,131 @@ let rec renderElement =
        *
        * The child renders at childPath(path, 0) in EVERY pass, committed or
        * not, so a component inside the viewport resolves to one identity
-       * and one hooks context however many times the frame visits it. */
+       * and one hooks context however many times the frame visits it.
+       *
+       * ROWS MODE (options.vpRows = Some) short-circuits all of that: the
+       * content is an array of pre-baked, style-self-contained rows, so
+       * there is no child to render, measure or clip, and a frame reads
+       * only the rows it shows. See Element.viewportOptions for the
+       * contract. */
       let childP = childPath(path, 0);
       let committed = !measuring && origin != None;
+
+      /* Shared tail of BOTH content modes: pad the visible lines out to the
+       * viewport's box and append the scrollbar column. Factored out so the
+       * two modes cannot drift apart - the child path's output must stay
+       * byte-identical to what it was before rows mode existed. */
+      let composite =
+          (~visible: list(string), ~vw: int, ~vh: int, ~showBar: bool,
+           ~contentH: int, ~offset: int)
+          : string => {
+        let padded =
+          visible
+          @ List.init(max(0, vh - List.length(visible)), _ =>
+              String.make(vw, ' ')
+            );
+        /* Scrollbar column: a thumb sized and placed by
+         * ScrollView.scrollbarMetrics (the same pure function its unit
+         * tests pin down), or a blank column when the content fits. */
+        let rows =
+          if (!showBar) {
+            padded;
+          } else {
+            let thumb =
+              ScrollView.scrollbarMetrics(
+                ~contentH,
+                ~viewportH=vh,
+                ~offset,
+              );
+            List.mapi(
+              (i, line) =>
+                line
+                ++ (
+                  switch (thumb) {
+                  | None => " "
+                  | Some((thumbTop, thumbH)) =>
+                    i >= thumbTop && i < thumbTop + thumbH ? "█" : "│"
+                  }
+                ),
+              padded,
+            );
+          };
+        String.concat("\n", rows);
+      };
+
+      switch (options.vpRows) {
+      | Some(rows) when !committed =>
+        /* Non-committed = a measurement. A rows viewport's natural height is
+         * its row count and its natural width is ZERO: the rows are opaque
+         * pre-baked strings, and measuring their width would mean parsing
+         * every one of them - the very cost this mode exists to avoid. So an
+         * Auto-sized rows-ScrollView is zero columns wide; put it in a sized
+         * slot, which the "SIZE IT" rule in ScrollView.re already demands for
+         * its height.
+         *
+         * n empty lines is n-1 newlines and nothing else, so this builds the
+         * answer in one allocation rather than a 100_000-element list. */
+        String.make(max(0, Array.length(rows) - 1), '\n')
+
+      | Some(rows) =>
+        let vh = constraints.availHeight;
+        if (vh <= 0) {
+          /* Same rule as the child path below: no rows allocated, nothing
+             painted. */
+          "";
+        } else {
+          let wantBar = options.vpShowScrollbar;
+          let barlessWidth = constraints.availWidth - (wantBar ? 1 : 0);
+          let (showBar, vw) =
+            barlessWidth <= 0
+              ? (false, max(0, constraints.availWidth))
+              : (wantBar, barlessWidth);
+
+          let contentH = Array.length(rows);
+          let clamped =
+            max(0, min(options.vpOffset, max(0, contentH - vh)));
+          /* Array.sub with bounds that cannot raise, however stale the
+             offset or however short the array. */
+          let count = max(0, min(vh, contentH - clamped));
+          let slice =
+            count <= 0 ? [||] : Array.sub(rows, clamped, count);
+
+          /* Clip each VISIBLE row to the content width. Only viewport-many
+             rows are parsed, so this stays O(viewport) - and it is what
+             keeps one over-wide row from pushing the scrollbar column off
+             the frame. */
+          let visible =
+            Array.to_list(slice)
+            |> List.map(row =>
+                 if (vw <= 0) {
+                   "";
+                 } else {
+                   let clippedRow =
+                     switch (StyledText.parse(row)) {
+                     | [] => ""
+                     | [line, ..._] =>
+                       StyledText.bake([StyledText.truncateLine(line, vw)])
+                     };
+                   Element.padToWidth(clippedRow, vw);
+                 }
+               );
+
+          let out =
+            composite(~visible, ~vw, ~vh, ~showBar, ~contentH, ~offset=clamped);
+
+          /* HERE ONLY: see the child path's identical call below. */
+          switch (options.vpOnViewport) {
+          | Some(f) => f((contentH, vh))
+          | None => ()
+          };
+
+          out;
+        };
+
+      | None =>
+      /* CHILD MODE - the original path, left at its original indentation so
+         that its diff against the pre-rows-mode version is empty. It ends at
+         the closing brace of this arm, just before the switch's own. */
       if (!committed) {
         renderElement(~measuring=true, child, rootCtx, constraints, ~path=childP);
       } else {
@@ -637,38 +759,16 @@ let rec renderElement =
               StyledText.sliceLines(rendered, ~from=clamped, ~count=vh),
             )
             |> List.map(line => vw <= 0 ? "" : Element.padToWidth(line, vw));
-          let padded =
-            visible
-            @ List.init(max(0, vh - List.length(visible)), _ =>
-                String.make(vw, ' ')
-              );
 
-          /* Scrollbar column: a thumb sized and placed by
-           * ScrollView.scrollbarMetrics (the same pure function its unit
-           * tests pin down), or a blank column when the content fits. */
-          let rows =
-            if (!showBar) {
-              padded;
-            } else {
-              let thumb =
-                ScrollView.scrollbarMetrics(
-                  ~contentH=naturalH,
-                  ~viewportH=vh,
-                  ~offset=clamped,
-                );
-              List.mapi(
-                (i, line) =>
-                  line
-                  ++ (
-                    switch (thumb) {
-                    | None => " "
-                    | Some((thumbTop, thumbH)) =>
-                      i >= thumbTop && i < thumbTop + thumbH ? "█" : "│"
-                    }
-                  ),
-                padded,
-              );
-            };
+          let out =
+            composite(
+              ~visible,
+              ~vw,
+              ~vh,
+              ~showBar,
+              ~contentH=naturalH,
+              ~offset=clamped,
+            );
 
           /* HERE ONLY: the committed pass is the one frame-accurate
            * measurement, so this is what ScrollView clamps against. */
@@ -677,8 +777,9 @@ let rec renderElement =
           | None => ()
           };
 
-          String.concat("\n", rows);
+          out;
         };
+      }
       };
 
     | Element.Static(items) when measuring =>
