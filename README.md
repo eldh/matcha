@@ -93,15 +93,16 @@ dune build
 ```
 
 To depend on Matcha from another dune project, add it to your `libraries`
-stanza and add `ppx_component` to your `preprocess` stanza (the PPX is what
-turns `[@component]` and JSX into plain ReasonML — see the `ppx/` directory):
+stanza and add `matcha.ppx` to your `preprocess` stanza (the PPX is what
+turns `[@component]` and JSX into plain ReasonML — see the `ppx/` directory;
+`ppx_component` is its internal name and only resolves inside this repo):
 
 ```
 (executable
  (name main)
  (libraries matcha)
  (preprocess
-  (pps ppx_component)))
+  (pps matcha.ppx)))
 ```
 
 ## Quick start
