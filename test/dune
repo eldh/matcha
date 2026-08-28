@@ -11,6 +11,7 @@
   element_tests
   mock_tests
   hooks_regression_tests
+  perf_tests
   golden
   golden_tests
   vterm

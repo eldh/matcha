@@ -11,7 +11,7 @@ terminal runtime and a headless runtime for testing/agents. The public API
 surface is `lib/Matcha.re`, pinned by the interface file `lib/Matcha.rei`;
 everything else under `lib/` is implementation. `examples/` holds 14 runnable
 sample apps (`examples/chat` is the capstone that uses most capabilities at
-once); `test/` holds a hand-rolled test suite (currently ~500 tests, including
+once); `test/` holds a hand-rolled test suite (currently 628 tests, including
 golden frame tests).
 
 ## Toolchain
@@ -88,6 +88,55 @@ underlying unused code instead.
    Vterm is written from xterm semantics, deliberately **not** from reading
    Matcha's painters. If the model and a painter disagree, that disagreement
    is a finding — never "fix" the model until the painter looks right.
+5. **Performance — `lib/Perf.re` tracing.** Steps 1–4 answer "is it
+   correct". This one answers "where did the time go", with attribution:
+   frame → phase → component → application span. The loop is
+   **record → read → optimize → re-record**, and it is the only acceptable
+   evidence for a performance claim.
+
+   Record a *scripted* interaction — the same bytes every time, so the
+   before and after are comparable:
+
+   ```
+   printf '\033[B\033[B\033[Bq' | timeout 60 env MATCHA_HEADLESS=1 \
+     MATCHA_WIDTH=200 MATCHA_HEIGHT=45 \
+     MATCHA_TRACE=/tmp/before.json dune exec matcha-example-counter > /dev/null
+   ```
+
+   (`\033[B` is arrow-down, `\033[A` arrow-up. The HANG TRAPS below still
+   apply: `timeout`, `MATCHA_HEADLESS=1`, and stdin that reaches EOF.)
+
+   Then **read `/tmp/before.json.summary.txt`**, in this order:
+   - `== slowest frames ==` first. It names the worst frame, splits it into
+     phases (`render`/`paint`/`effects`/…), and lists the three most
+     expensive non-phase spans inside it. That is usually the whole answer.
+   - `== spans ==` second, and look at the **self** column, not `total` —
+     `total` double-counts nested work. Rows suffixed `~measuring` are the
+     layout measure pass over an `Auto` child (a stack renders such a child
+     twice per frame); a large `~measuring` row means the *measuring* is
+     expensive, not the painting.
+   - `dispatch-*` and `timers` spans sit *between* frames, so they appear in
+     the spans table only, never under a frame.
+
+   The trace itself (`/tmp/before.json`) is Chrome Trace Event JSON — open it
+   in <https://ui.perfetto.dev> for a flame view when the summary is not
+   enough. Below span granularity, use macOS `sample <pid>` or Instruments.
+
+   Wrap application-level work in `Perf.span("name", () => ...)` so it shows
+   up nested under the component that ran it.
+
+   **NEVER claim a performance win without BOTH a before and an after
+   summary of the same scripted interaction.** Quote the two
+   `== slowest frames ==` sections side by side.
+
+   Tracing is off unless `MATCHA_TRACE` is set (or `Perf.enable` is called),
+   costs nothing when off, and **writes to files only — never to stdout or
+   stderr**. That is why goldens stay valid with tracing on; there is a test
+   (`test/perf_tests.re`) that renders an example against its existing golden
+   with `MATCHA_TRACE` set, to keep it that way. Perf reads
+   `Unix.gettimeofday` directly, so the headless virtual clock
+   (`advanceTime`) cannot corrupt a measurement — never route it through
+   `Hooks.instanceState.now`.
 
 **HANG TRAP: never run an example without `MATCHA_HEADLESS=1`.** Without it,
 `Runtime.start` puts the terminal in raw mode and blocks waiting for a real
@@ -118,6 +167,7 @@ session outside `withSession`, and never wait on a child with a bare sleep.
 | `lib/StyledText.re` | ANSI-aware wrapping/truncation of already-rendered styled text: `parse`/`bake` (styled string ↔ per-cell chunks), `wrapString` (behind `<Text wrap>`), truncate variants, `sliceLines` (behind `Viewport`). Its SGR parser knows the closed set Matcha emits, including `38;2`/`48;2` truecolor, so a clipped or wrapped row re-opens the exact same color. Pure. | ~560 lines |
 | `lib/InputDecoder.re` | Stateful byte-stream assembler between `Terminal.readBytes` and dispatch: reassembles raw reads into `KeyEvent`/`PasteEvent` (bracketed paste)/`MouseEvent`/`CursorReport`/`OscReport` (an OSC string reply, split into code + payload; `ESC ]` … BEL or ST) regardless of how bytes were split across reads (`feed`/`flush`; lone-ESC 25ms deadline). An unterminated OSC is discarded at flush, never replayed as keys. | ~400 lines |
 | `lib/LiveRegion.re` | Pure inline frame patcher with RELATIVE cursor addressing: `patch` turns the painted live region into the next frame, committing `<Static>`/`useStdout` lines above it; `erase` removes the region. What the interactive loop writes — no `ESC[2J`, sync guards around each paint. | ~270 lines |
+| `lib/Perf.re` | Performance tracing, off by default. Records nested spans (`span`/`frame`/`instant`, plus the closure-free `recordComponent` the renderer calls per component) and, on `flush` or at process exit, writes a Chrome Trace Event JSON plus a plain-text `.summary.txt` digest (span table with **self** time, slowest frames broken down by phase). Enabled by `MATCHA_TRACE=<path>` or `Perf.enable`. Two invariants: it NEVER writes to stdout/stderr (goldens stay valid with tracing on), and it reads `Unix.gettimeofday` directly, never the headless virtual clock. Its module-level state is a deliberate, documented exception to the "no module-level app state" gotcha — tracing is process-global tooling that outlives any one `instanceState`. | ~430 lines |
 | `lib/Mouse.re` | SGR (1006) mouse event types, `parseSgr`/`encodeSgr`, and rect helpers (`contains`/`intersect`) for the bounds registry. Pure. | ~210 lines |
 | `lib/ScrollView.re` | `<ScrollView>` — a focusable, wheel-scrollable window onto taller content, built on `Element.Viewport`; uncontrolled by default, controllable via `~offset`/`~onScroll`; `scrollbarMetrics` is the pure thumb geometry. Two content modes: children (rendered whole, then clipped — O(total content) per frame) or `~rows`, an array of pre-baked style-self-contained rows that ignores the child and touches only the visible window — O(viewport) per frame, for long pre-rendered content. | ~250 lines |
 | `lib/TextArea.re` | `<TextArea>` as applications get it (`Matcha.TextArea`): `include Element.TextArea` for everything pure, plus a shadowing `createElement` that wraps the renderer in a real component owning the cursor blink (`useState` + `useInterval` at 530ms, feeding `~cursorVisible`). `~blink=false` opts out; the blink is disabled under `MATCHA_HEADLESS=1` stream mode. Adds `~key` support the element-level `createElement` never had. | ~105 lines |

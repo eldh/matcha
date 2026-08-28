@@ -29,6 +29,7 @@ module Runtime = Runtime;
 module Terminal = Terminal;
 module FrameDiff = FrameDiff;
 module LiveRegion = LiveRegion;
+module Perf = Perf; /* Performance tracing (MATCHA_TRACE / Perf.enable) */
 
 /* JSX Element components available at top level */
 module Text = Element.Text; /* Text with optional styling props */

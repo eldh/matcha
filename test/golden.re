@@ -203,7 +203,7 @@ let readAllWithTimeout = (fd: Unix.file_descr, timeoutSec: float): string => {
  * use `checkExample` for that. Exposed separately for examples whose
  * output isn't fully deterministic (e.g. async-fetch), where callers may
  * want to assert on a stable substring instead of an exact golden match. */
-let runExample = (name: string): string => {
+let runExample = (~extraEnv: list(string)=[], name: string): string => {
   let relPath = "../examples/" ++ name ++ "/main.exe";
   let path =
     if (Sys.file_exists(relPath)) {
@@ -221,12 +221,18 @@ let runExample = (name: string): string => {
     | Some(p) => p
     | None => "/usr/bin:/bin"
     };
-  let env = [|
-    "PATH=" ++ pathEnv,
-    "MATCHA_HEADLESS=1",
-    "MATCHA_WIDTH=80",
-    "MATCHA_HEIGHT=24",
-  |];
+  /* extraEnv lets a caller add variables (MATCHA_TRACE=..., say) without
+   * disturbing the fixed four above, which every golden depends on. */
+  let env =
+    Array.append(
+      [|
+        "PATH=" ++ pathEnv,
+        "MATCHA_HEADLESS=1",
+        "MATCHA_WIDTH=80",
+        "MATCHA_HEIGHT=24",
+      |],
+      Array.of_list(extraEnv),
+    );
 
   let pid = Unix.create_process_env(path, [|path|], env, devnull, writeEnd, Unix.stderr);
   Unix.close(devnull);
@@ -254,7 +260,8 @@ let runExample = (name: string): string => {
  * arrives in ONE read() - which is exactly what makes this useful: it
  * exercises the byte-fed loop's event batching (deliverAll + flushDirty in
  * lib/Runtime.re), which the in-process handle path never touches. */
-let runExampleWithInput = (name: string, input: string): string => {
+let runExampleWithInput =
+    (~extraEnv: list(string)=[], name: string, input: string): string => {
   let relPath = "../examples/" ++ name ++ "/main.exe";
   let path =
     if (Sys.file_exists(relPath)) {
@@ -273,12 +280,18 @@ let runExampleWithInput = (name: string, input: string): string => {
     | Some(p) => p
     | None => "/usr/bin:/bin"
     };
-  let env = [|
-    "PATH=" ++ pathEnv,
-    "MATCHA_HEADLESS=1",
-    "MATCHA_WIDTH=80",
-    "MATCHA_HEIGHT=24",
-  |];
+  /* extraEnv lets a caller add variables (MATCHA_TRACE=..., say) without
+   * disturbing the fixed four above, which every golden depends on. */
+  let env =
+    Array.append(
+      [|
+        "PATH=" ++ pathEnv,
+        "MATCHA_HEADLESS=1",
+        "MATCHA_WIDTH=80",
+        "MATCHA_HEIGHT=24",
+      |],
+      Array.of_list(extraEnv),
+    );
 
   let pid =
     Unix.create_process_env(path, [|path|], env, stdinRead, writeEnd, Unix.stderr);
@@ -304,4 +317,5 @@ let runExampleWithInput = (name: string, input: string): string => {
 
 /* Run a built example binary headlessly and check its first rendered frame
  * against a golden named "example-<name>". */
-let checkExample = (name: string): unit => check("example-" ++ name, runExample(name));
+let checkExample = (~extraEnv: list(string)=[], name: string): unit =>
+  check("example-" ++ name, runExample(~extraEnv, name));

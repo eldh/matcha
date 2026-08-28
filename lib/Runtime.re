@@ -1378,6 +1378,16 @@ let rec renderElement =
       /* Record that this component was visited this render */
       recordRenderedComponent(stableId);
 
+      /* Perf tracing (lib/Perf.re), off by default. Deliberately
+       * closure-free: this is the hottest path in the renderer, so an
+       * untraced render pays one bool read and nothing else - no `span`
+       * wrapper, no allocation. The label is the ppx typeId (a source
+       * location) plus the stableId; NEVER selfPath, whose separators are
+       * control characters. `measuring` is the in-scope flag, so a stack's
+       * measure pass of an Auto child lands in its own summary row. */
+      let perfOn = Perf.isEnabled();
+      let perfT0 = perfOn ? Perf.nowUs() : 0.0;
+
       /* Mouse bounds (B4). Recorded only on a committed pass: real mode with
        * a known origin. The rect is the box the parent ALLOCATED (its origin
        * plus this component's constraints), clipped to the innermost clip
@@ -1437,6 +1447,19 @@ let rec renderElement =
       /* Restore previous context */
       st.currentContext := previousContext;
       st.currentComponentId := previousComponentId;
+
+      if (perfOn) {
+        Perf.recordComponent(
+          ~name=
+            switch (typeId) {
+            | Some(t) => t
+            | None => "?"
+            },
+          ~t0=perfT0,
+          ~measuring,
+          ~id=stableId,
+        );
+      };
       result;
 
     | Element.WithContext(setup, teardown, children) =>
@@ -1847,13 +1870,18 @@ let deliverAll =
     (event: InputDecoder.event) => {
       flushDirty();
       switch (event) {
-      | InputDecoder.KeyEvent(key, mods) => Hooks.dispatchKey(ctx, key, mods)
+      | InputDecoder.KeyEvent(key, mods) =>
+        Perf.span("dispatch-key", () => Hooks.dispatchKey(ctx, key, mods))
       | InputDecoder.PasteEvent(s) =>
-        Hooks.dispatchKey(ctx, Key.Paste(s), Key.noModifiers)
+        Perf.span("dispatch-paste", () =>
+          Hooks.dispatchKey(ctx, Key.Paste(s), Key.noModifiers)
+        )
       | InputDecoder.MouseEvent(ev) =>
         let localY = ev.Mouse.y - (liveTop() - 1);
         if (localY >= 0) {
-          Hooks.dispatchMouse(ctx, {...ev, Mouse.y: localY});
+          Perf.span("dispatch-mouse", () =>
+            Hooks.dispatchMouse(ctx, {...ev, Mouse.y: localY})
+          );
         }
       | InputDecoder.CursorReport(row, col) =>
         switch (onCursor) {
@@ -1910,7 +1938,8 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
 
   /* One full frame - factored out so deliverAll's ~flushDirty can run it
      between two input events decoded from one read (see deliverAll). */
-  let renderFrame = () => {
+  let renderFrame = () =>
+    Perf.frame(() => {
     /* No clearScreen in headless - just output the frame */
     Hooks.instance().currentContext := Some(ctx);
       Hooks.beginRender(ctx);
@@ -1930,31 +1959,42 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
          assignment in startHeadless's doRender for the full story). */
       currentConstraints := constraints;
 
-      let element = C.make();
       let output =
-        renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+        Perf.span("render", () => {
+          let element = C.make();
+          renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+        });
       /* Static output (A4) is committed ABOVE the frame, one line each, in
        * exactly the position the interactive loop would put it. An
        * application that uses neither <Static> nor useStdout drains an
        * empty list here and prints byte-for-byte what it printed before A4 -
        * which is what keeps every existing golden valid. */
-      List.iter(
-        line => {
-          print_string(line);
-          print_newline();
-        },
-        drainStaticLines(),
-      );
-      print_string(output);
-      print_newline(); /* Add newline between frames for readability */
-      flush(stdout);
+      let staticLines = Perf.span("static-drain", () => drainStaticLines());
+      Perf.span("paint", () => {
+        List.iter(
+          line => {
+            print_string(line);
+            print_newline();
+          },
+          staticLines,
+        );
+        print_string(output);
+        print_newline(); /* Add newline between frames for readability */
+        flush(stdout);
+      });
 
-      Hooks.commitEffects(ctx);
-      Hooks.cleanupUnmountedComponents(renderedComponentIds());
-      Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()));
-      Hooks.commitFocus(Hooks.instance(), ctx);
+      Perf.span("effects", () => Hooks.commitEffects(ctx));
+      Perf.span("unmount-sweep", () =>
+        Hooks.cleanupUnmountedComponents(renderedComponentIds())
+      );
+      Perf.span("collect-handlers", () =>
+        Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()))
+      );
+      Perf.span("focus-commit", () =>
+        Hooks.commitFocus(Hooks.instance(), ctx)
+      );
       Hooks.instance().currentContext := None;
-  };
+  });
 
   let flushDirty = () =>
     if (running^ && ctx.needsRerender) {
@@ -1997,7 +2037,7 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
     /* Fire any timers (useInterval/useTimeout) whose deadline has passed.
        Callbacks run like key handlers, outside of render; setState inside
        one just marks needsRerender for the next loop iteration. */
-    ignore(Hooks.fireDueTimers());
+    Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
   };
 };
 
@@ -2246,7 +2286,8 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
        commit phase, sync mouse mode. Factored out of the loop so that
        deliverAll's ~flushDirty can run it BETWEEN two input events decoded
        from one read (see deliverAll's doc comment). */
-    let renderFrame = () => {
+    let renderFrame = () =>
+      Perf.frame(() => {
       /* Set current context and render */
       Hooks.instance().currentContext := Some(ctx);
         Hooks.beginRender(ctx);
@@ -2270,9 +2311,11 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
            assignment in startHeadless's doRender for the full story). */
         currentConstraints := constraints;
 
-        let element = C.make();
         let output =
-          renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+          Perf.span("render", () => {
+            let element = C.make();
+            renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+          });
 
         /* Everything the frame wants to commit above the live region, in
          * order (see drainStaticLines). Empty for an application that uses
@@ -2284,8 +2327,9 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
          * anyway: <Static> and useStdout raise before anything can be queued
          * there (see screenMode / Hooks.requireStaticAllowed), so the drain
          * is a cheap invariant check rather than a discard. */
-        let staticLines = drainStaticLines();
+        let staticLines = Perf.span("static-drain", () => drainStaticLines());
 
+        Perf.span("paint", () =>
         switch (screen) {
         | Fullscreen =>
           /* The app owns the whole viewport: clamp the frame to the terminal
@@ -2356,33 +2400,42 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
             );
           prevFrame := Some(next);
           prevHeight := nextLen;
-        };
+        }
+        );
 
         /* Commit phase: run effects queued during the render */
-        Hooks.commitEffects(ctx);
+        Perf.span("effects", () => Hooks.commitEffects(ctx));
 
         /* Remove any component contexts that were not rendered this pass */
-        Hooks.cleanupUnmountedComponents(renderedComponentIds());
+        Perf.span("unmount-sweep", () =>
+          Hooks.cleanupUnmountedComponents(renderedComponentIds())
+        );
 
         /* Collect key handlers from all component contexts into root context */
-        Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()));
-        Hooks.commitFocus(Hooks.instance(), ctx);
+        Perf.span("collect-handlers", () =>
+          Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()))
+        );
+        Perf.span("focus-commit", () =>
+          Hooks.commitFocus(Hooks.instance(), ctx)
+        );
 
         /* Mouse mode follows the committed frame's interest (B4). Done after
            the commit, so it sees this frame's handlers, and only on a change,
            so a steady-state frame emits no escape bytes at all. */
-        let wantMouse = Hooks.hasMouseHandlers();
-        if (wantMouse != mouseEnabled^) {
-          if (wantMouse) {
-            Terminal.enableMouse();
-          } else {
-            Terminal.disableMouse();
+        Perf.span("mouse-sync", () => {
+          let wantMouse = Hooks.hasMouseHandlers();
+          if (wantMouse != mouseEnabled^) {
+            if (wantMouse) {
+              Terminal.enableMouse();
+            } else {
+              Terminal.disableMouse();
+            };
+            mouseEnabled := wantMouse;
           };
-          mouseEnabled := wantMouse;
-        };
+        });
 
       Hooks.instance().currentContext := None;
-    };
+      });
 
     /* Re-render immediately if an event handler left the app dirty - run by
        deliverAll between two events from the same read. Guarded on running:
@@ -2461,7 +2514,7 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
       /* Fire any timers (useInterval/useTimeout) whose deadline has passed.
          Callbacks run like key handlers, outside of render; setState inside
          one just marks needsRerender for the next loop iteration. */
-      ignore(Hooks.fireDueTimers());
+      Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
     };
   };
 };
@@ -2529,7 +2582,8 @@ let startHeadless =
   /* No terminal setup */
 
   /* Render function */
-  let doRender = (): string => {
+  let doRender = (): string =>
+    Perf.frame(() => {
     activate();
     ctx.needsRerender = false;
 
@@ -2553,29 +2607,37 @@ let startHeadless =
        site, so the root sees the same width/height its children do. */
     currentConstraints := constraints;
 
-    let element = C.make();
     let output =
-      renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+      Perf.span("render", () => {
+        let element = C.make();
+        renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
+      });
 
     /* Static commits belong to the frame that produced them, so they are
        drained here, in the same place the real loops drain them. */
-    List.iter(
-      line => {
-        Buffer.add_string(staticBuf, line);
-        Buffer.add_char(staticBuf, '\n');
-      },
-      drainStaticLines(),
+    Perf.span("static-drain", () =>
+      List.iter(
+        line => {
+          Buffer.add_string(staticBuf, line);
+          Buffer.add_char(staticBuf, '\n');
+        },
+        drainStaticLines(),
+      )
     );
 
-    Hooks.commitEffects(ctx);
-    Hooks.cleanupUnmountedComponents(renderedComponentIds());
-    Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()));
-    Hooks.commitFocus(myInstance, ctx);
+    Perf.span("effects", () => Hooks.commitEffects(ctx));
+    Perf.span("unmount-sweep", () =>
+      Hooks.cleanupUnmountedComponents(renderedComponentIds())
+    );
+    Perf.span("collect-handlers", () =>
+      Hooks.collectKeyHandlers(ctx, List.rev(renderedComponentIds()))
+    );
+    Perf.span("focus-commit", () => Hooks.commitFocus(myInstance, ctx));
     myInstance.currentContext := None;
 
     lastOutput := output;
     output;
-  };
+  });
 
   /* Advance the virtual clock, firing timers deadline-by-deadline (not
      coalesced - see the headlessHandle.advanceTime doc comment above). At
@@ -2605,7 +2667,7 @@ let startHeadless =
       switch (earliestDeadline) {
       | Some(deadline) when deadline <= target =>
         virtualNow := deadline;
-        ignore(Hooks.fireDueTimers());
+        Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
         if (ctx.needsRerender) {
           ignore(doRender());
         };
@@ -2633,7 +2695,9 @@ let startHeadless =
     sendKey: (key, modifiers) =>
       if (running^) {
         activate();
-        Hooks.dispatchKey(ctx, key, modifiers);
+        Perf.span("dispatch-key", () =>
+          Hooks.dispatchKey(ctx, key, modifiers)
+        );
         /* Re-render if state changed */
         if (ctx.needsRerender) {
           let _ = doRender();
@@ -2650,10 +2714,12 @@ let startHeadless =
     sendPaste: text =>
       if (running^) {
         activate();
-        Hooks.dispatchKey(
-          ctx,
-          Key.Paste(InputDecoder.normalizePasteBody(text)),
-          Key.noModifiers,
+        Perf.span("dispatch-paste", () =>
+          Hooks.dispatchKey(
+            ctx,
+            Key.Paste(InputDecoder.normalizePasteBody(text)),
+            Key.noModifiers,
+          )
         );
         if (ctx.needsRerender) {
           let _ = doRender();
@@ -2668,7 +2734,7 @@ let startHeadless =
     sendMouse: ev =>
       if (running^) {
         activate();
-        Hooks.dispatchMouse(ctx, ev);
+        Perf.span("dispatch-mouse", () => Hooks.dispatchMouse(ctx, ev));
         if (ctx.needsRerender) {
           let _ = doRender();
           ();

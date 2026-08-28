@@ -101,6 +101,32 @@ module FrameDiff: (module type of FrameDiff);
 
 module LiveRegion: (module type of LiveRegion);
 
+/** Performance tracing. OFF by default and free when off.
+
+    Turn it on either by setting [MATCHA_TRACE=/path/to/trace.json] in a
+    binary's environment, or by calling [Perf.enable(path)] in a test (pair it
+    with [Perf.flush()] and, always, [Perf.disable()] in a [Fun.protect]
+    finaliser).
+
+    On [flush] - and automatically at process exit - two files are written:
+    the Chrome Trace Event JSON at [path] (loads in Perfetto or
+    chrome://tracing) and a plain-text digest at [path ++ ".summary.txt"]
+    listing every span with count/total/mean/max/self time plus the slowest
+    frames broken down by phase.
+
+    Frames, render phases and individual components are instrumented by the
+    runtime; wrap application work in [Perf.span("name", () => ...)] to see it
+    nested under the component that ran it.
+
+    Two properties this module guarantees:
+    - it NEVER writes to stdout or stderr, only to files, so tracing an app
+      leaves its rendered output byte-identical (goldens stay valid);
+    - it reads [Unix.gettimeofday] directly, so the headless handle's virtual
+      clock ([advanceTime]) cannot leak into a measurement. The flip side is
+      that the clock is wall-clock and therefore not monotonic. */
+
+module Perf: (module type of Perf);
+
 /* ============================================================================
  * JSX element components available at the top level
  * ============================================================================ */
