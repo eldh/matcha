@@ -24,6 +24,7 @@ let () = {
   Mock_tests.run();
   Hooks_regression_tests.run();
   Perf_tests.run();
+  Packaging_tests.run();
   Golden_tests.run();
   Vterm_tests.run();
   Pty_tests.run();

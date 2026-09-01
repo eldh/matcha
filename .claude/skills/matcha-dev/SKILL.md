@@ -350,7 +350,7 @@ rendering change. Helpers in `test/golden.re`:
 - `Golden.checkComponent("name", (module SomeComponent))` — renders a small
   in-process component headlessly and compares against
   `test/goldens/name.txt`.
-- `Golden.checkExample("counter")` — spawns the `matcha-example-counter`
+- `Golden.checkExample("counter")` — spawns the built `examples/counter/main.exe`
   binary headlessly (with a timeout and closed stdin) and compares against
   `test/goldens/example-counter.txt`.
 - `Golden.check("name", actualString)` — the raw form behind both.

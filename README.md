@@ -85,16 +85,13 @@ let () = Runtime.start((module App));
 
 ## Installation
 
-Matcha targets OCaml >= 5.3.0 with Reason >= 3.12.0 and ppxlib >= 0.36.0. It
-is built with dune and depends on `unix` (bundled with the OCaml
-distribution).
-
-Using a local opam switch (as this repository does):
+Matcha targets OCaml >= 5.3.0 with Reason >= 3.12.0 and ppxlib >= 0.36.0
+(below 0.39.0). It is built with dune and depends on `unix` (bundled with
+the OCaml distribution). The terminal layer needs `termios` and `ioctl`, so
+Windows is not supported.
 
 ```
-opam switch create . 5.3.0
-opam install . --deps-only
-dune build
+opam install matcha
 ```
 
 To depend on Matcha from another dune project, add it to your `libraries`
@@ -108,6 +105,15 @@ turns `[@component]` and JSX into plain ReasonML — see the `ppx/` directory;
  (libraries matcha)
  (preprocess
   (pps matcha.ppx)))
+```
+
+To work on Matcha itself, clone it and use a local opam switch, as this
+repository does:
+
+```
+opam switch create . 5.3.0
+opam install . --deps-only
+dune build
 ```
 
 ## Quick start
@@ -154,7 +160,7 @@ Build and run it (a real terminal is required — see Headless mode below for
 running without one):
 
 ```
-dune exec matcha-example-counter
+dune exec examples/counter/main.exe
 ```
 
 ## Components & hooks reference
@@ -705,7 +711,7 @@ Because it still blocks reading stdin until EOF, always redirect stdin and
 cap runtime with `timeout` when scripting it — otherwise it hangs:
 
 ```
-timeout 10 env MATCHA_HEADLESS=1 dune exec matcha-example-counter < /dev/null
+timeout 10 env MATCHA_HEADLESS=1 dune exec examples/counter/main.exe < /dev/null
 ```
 
 Pipe keys in via stdin bytes to drive it interactively from a script.
@@ -767,26 +773,26 @@ SIGWINCH resize and the exit restore sequence are all covered by
 ## Examples
 
 All examples live under `examples/` and build as separate dune executables.
-Run any of them with `dune exec <public-name>` in a real terminal, or with
-the headless invocation shown above.
+Run any of them with `dune exec examples/<directory>/main.exe` in a real
+terminal, or with the headless invocation shown above.
 
-| Directory | Public name | Demonstrates |
-|---|---|---|
-| `hello-world` | `matcha-example-hello-world` | Minimal app, `useQuit`, `useKeyDown`. |
-| `counter` | `matcha-example-counter` | `useState`, `useMemo`, key handling. |
-| `layout-demo` | `matcha-example-layout-demo` | `Sized`, `Flex`/`Percent`/`Chars`, `<Container>` + `useContainerSize`. |
-| `layout-alignment` | `matcha-example-layout-alignment` | `align` / `justify` on `HStack`/`VStack`, container-relative self-sizing. |
-| `nested-components` | `matcha-example-nested-components` | Composing components, `Context.Make`. |
-| `keyed-switch` | `matcha-example-keyed-switch` | Component identity via the `key` prop. |
-| `optional-params` | `matcha-example-optional-params` | Optional component props (`~second: string=?`). |
-| `textarea-demo` | `matcha-example-textarea-demo` | `TextArea`, cursor/selection state. |
-| `async-fetch` | `matcha-example-async-fetch` | Background-thread state updates waking the render loop. |
-| `people-list` | `matcha-example-people-list` | Multi-module app: context, a filterable list, custom split-pane layout. |
-| `static-demo` | `matcha-example-static-demo` | `<Static>` transcript above the live region, `useStdout`. |
-| `scroll-demo` | `matcha-example-scroll-demo` | `<ScrollView>`, focus ring, wheel scrolling. |
-| `chat` | `matcha-example-chat` | The capstone: `<Static>` transcript, focused `<TextArea>` with paste, `useInterval` spinner, `<ScrollView>` panel with `<Clickable>` rows. Tested end to end by `test/chat_tests.re`. |
-| `command-menu` | `matcha-example-command-menu` | The **overlay showcase**: a live log viewer (a `useInterval` stream into a virtualized `<ScrollView rows>`, inside a `<Container>`) with a Ctrl+K command palette in a `<Modal>`. The log keeps streaming while the palette is open, which is the point — a modal owns the keyboard, not the clock. Tested end to end by `test/commandmenu_tests.re`, plus a real-PTY case. |
-| `claude-code` | `matcha-example-claude-code` | The **fullscreen showcase** (`~screen=Fullscreen`): a mock of the Claude Code CLI that fills the terminal on the alternate screen with the prompt pinned to the bottom. Its transcript is app state in a stick-to-bottom controlled `<ScrollView>` (no `<Static>` — there is no scrollback to commit to), plus a timer-driven status row, a slash-command palette on a second controlled `<ScrollView>`, Shift+Tab permission modes and double-Ctrl+C to quit. Deliberately focus-free — see `test/claudecode_tests.re`. |
+| Directory | Demonstrates |
+|---|---|
+| `hello-world` | Minimal app, `useQuit`, `useKeyDown`. |
+| `counter` | `useState`, `useMemo`, key handling. |
+| `layout-demo` | `Sized`, `Flex`/`Percent`/`Chars`, `<Container>` + `useContainerSize`. |
+| `layout-alignment` | `align` / `justify` on `HStack`/`VStack`, container-relative self-sizing. |
+| `nested-components` | Composing components, `Context.Make`. |
+| `keyed-switch` | Component identity via the `key` prop. |
+| `optional-params` | Optional component props (`~second: string=?`). |
+| `textarea-demo` | `TextArea`, cursor/selection state. |
+| `async-fetch` | Background-thread state updates waking the render loop. |
+| `people-list` | Multi-module app: context, a filterable list, custom split-pane layout. |
+| `static-demo` | `<Static>` transcript above the live region, `useStdout`. |
+| `scroll-demo` | `<ScrollView>`, focus ring, wheel scrolling. |
+| `chat` | The capstone: `<Static>` transcript, focused `<TextArea>` with paste, `useInterval` spinner, `<ScrollView>` panel with `<Clickable>` rows. Tested end to end by `test/chat_tests.re`. |
+| `command-menu` | The **overlay showcase**: a live log viewer (a `useInterval` stream into a virtualized `<ScrollView rows>`, inside a `<Container>`) with a Ctrl+K command palette in a `<Modal>`. The log keeps streaming while the palette is open, which is the point — a modal owns the keyboard, not the clock. Tested end to end by `test/commandmenu_tests.re`, plus a real-PTY case. |
+| `claude-code` | The **fullscreen showcase** (`~screen=Fullscreen`): a mock of the Claude Code CLI that fills the terminal on the alternate screen with the prompt pinned to the bottom. Its transcript is app state in a stick-to-bottom controlled `<ScrollView>` (no `<Static>` — there is no scrollback to commit to), plus a timer-driven status row, a slash-command palette on a second controlled `<ScrollView>`, Shift+Tab permission modes and double-Ctrl+C to quit. Deliberately focus-free — see `test/claudecode_tests.re`. |
 
 ## Development
 
@@ -806,13 +812,13 @@ dune runtest
 Run a specific example interactively:
 
 ```
-dune exec matcha-example-counter
+dune exec examples/counter/main.exe
 ```
 
 Run a specific example headlessly (see Headless mode above):
 
 ```
-timeout 10 env MATCHA_HEADLESS=1 dune exec matcha-example-counter < /dev/null
+timeout 10 env MATCHA_HEADLESS=1 dune exec examples/counter/main.exe < /dev/null
 ```
 
 Note: the dev profile promotes warnings to errors, so unused bindings will
@@ -821,3 +827,9 @@ fail the build — clean up unused code rather than suppressing warnings.
 See `CLAUDE.md` for a deeper architecture map and contributor-facing
 workflow notes, and `.claude/skills/matcha-dev/SKILL.md` for step-by-step
 recipes (adding a component, writing a headless test, etc.).
+
+## Releasing
+
+`CHANGELOG.md` records what changed in each version. `RELEASING.md`
+describes how a version reaches opam, and `scripts/release.sh` and
+`scripts/opam-pr.sh` do it.

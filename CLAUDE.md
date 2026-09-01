@@ -57,7 +57,7 @@ underlying unused code instead.
 3. **Headless smoke run** for end-to-end sanity on a real example app:
 
    ```
-   timeout 10 env MATCHA_HEADLESS=1 dune exec matcha-example-counter < /dev/null
+   timeout 10 env MATCHA_HEADLESS=1 dune exec examples/counter/main.exe < /dev/null
    ```
 
    This prints each rendered frame to stdout and reads keys from stdin until
@@ -101,7 +101,7 @@ underlying unused code instead.
    ```
    printf '\033[B\033[B\033[Bq' | timeout 60 env MATCHA_HEADLESS=1 \
      MATCHA_WIDTH=200 MATCHA_HEIGHT=45 \
-     MATCHA_TRACE=/tmp/before.json dune exec matcha-example-counter > /dev/null
+     MATCHA_TRACE=/tmp/before.json dune exec examples/counter/main.exe > /dev/null
    ```
 
    (`\033[B` is arrow-down, `\033[A` arrow-up. The HANG TRAPS below still
@@ -444,3 +444,23 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   `Matcha.re`) when you deliberately change the public surface. Notably,
   `Element.Fragment` exists but is *not* re-exported at the top level (it's
   still reachable as `Matcha.Element.Fragment`).
+- **`matcha` is a published opam package, and it installs a library and
+  nothing else.** Never give an `examples/*/dune` executable a
+  `(public_name ...)`: that puts it in the `bin:` section of
+  `matcha.install`, so `opam install matcha` drops a demo binary into the
+  user's PATH. This actually shipped in 0.1.0, with all 15 of them.
+  `test/packaging_tests.re` fails if a `bin:` section reappears, and
+  `scripts/release.sh` refuses to tag. Run examples by path —
+  `dune exec examples/counter/main.exe`. Likewise, `matcha.opam` is
+  generated: **edit `dune-project`**, or `matcha.opam.template` for the two
+  fields dune cannot express (`available:`, `x-maintenance-intent:`).
+
+## Releasing
+
+`CHANGELOG.md` is the record; `RELEASING.md` is the procedure;
+`scripts/release.sh` (checks, tag, GitHub release) and `scripts/opam-pr.sh`
+(the opam-repository pull request) carry it out. Both take `--dry-run`.
+
+The version lives **only** in the git tag — `dune-project` has no version
+field, so a release needs no version bump and no release commit, just a
+`## <version>` section in `CHANGELOG.md` before you start.

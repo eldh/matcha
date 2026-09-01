@@ -1,6 +1,5 @@
 (executable
  (name main)
- (public_name matcha-example-scroll-demo)
  (libraries matcha)
  (preprocess
   (pps ppx_component)))

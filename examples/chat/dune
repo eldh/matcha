@@ -9,6 +9,5 @@
 
 (executable
  (name main)
- (public_name matcha-example-chat)
  (modules main)
  (libraries matcha chatApp))

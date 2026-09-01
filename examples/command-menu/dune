@@ -9,6 +9,5 @@
 
 (executable
  (name main)
- (public_name matcha-example-command-menu)
  (modules main)
  (libraries matcha commandMenuApp))

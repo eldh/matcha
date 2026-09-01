@@ -12,6 +12,7 @@
   mock_tests
   hooks_regression_tests
   perf_tests
+  packaging_tests
   golden
   golden_tests
   vterm
@@ -50,6 +51,7 @@
  (deps
   (universe) ; Always re-run, don't cache
   (glob_files goldens/*.txt)
+  ../matcha.install
   ../examples/hello-world/main.exe
   ../examples/counter/main.exe
   ../examples/optional-params/main.exe

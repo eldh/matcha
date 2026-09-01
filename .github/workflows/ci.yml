@@ -32,6 +32,6 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           output=$(timeout 15 env MATCHA_HEADLESS=1 MATCHA_WIDTH=80 MATCHA_HEIGHT=24 \
-            opam exec -- dune exec matcha-example-counter < /dev/null)
+            opam exec -- dune exec examples/counter/main.exe < /dev/null)
           echo "$output" | head -40
           test -n "$output"
