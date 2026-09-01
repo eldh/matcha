@@ -203,6 +203,64 @@ let componentPath =
     }
   );
 
+/* ============================================================================
+ * Overlay queue (B2)
+ * ============================================================================ */
+
+/* One floating layer, as the render walk produced it: the lines to paint, the
+ * box they go in (FRAME coordinates, already clipped to the frame), and the
+ * bits [Hooks] needs to route input to it.
+ *
+ * - ofPath: the Overlay node's tree path. It is the queue key, so a subtree
+ *   visited twice in one frame (an HStack measures its children, then renders
+ *   them for real) records ONE layer, not two - the recordPendingStatic rule.
+ * - ofLines: exactly ofH lines, each already clipped to ofH rows. They are
+ *   NOT padded to ofW here; the compositor pads every row it splices, which
+ *   is what makes the layer opaque.
+ * - ofMembers: the component ids rendered INSIDE the layer's child. This is
+ *   the layer's membership - see the Overlay case for how it is captured.
+ * - ofShadow / ofOnDismiss: straight from the node's options. */
+type overlayFrame = {
+  ofPath: string,
+  ofLines: list(string),
+  ofX: int,
+  ofY: int,
+  ofW: int,
+  ofH: int,
+  ofShadow: bool,
+  ofOnDismiss: option(unit => unit),
+  ofMembers: list(Element.componentId),
+};
+
+/* This frame's layers, BOTTOM-MOST FIRST (first-visit, i.e. tree, order) -
+ * which is also paint order, so a later sibling floats over an earlier one.
+ * Transient within a frame; cleared by resetComponentTracking. */
+let overlayQueue: ref(list(overlayFrame)) = ref([]);
+
+/* Queue (or re-queue) the layer for the Overlay node at [f.ofPath].
+ *
+ * REPLACES any entry already recorded for the same path in this frame,
+ * keeping its position, exactly like Hooks.recordPendingStatic and for
+ * exactly the same reason: a stack that measures an Auto child and then
+ * renders it for real walks the subtree twice, and the second walk computes
+ * the same layer. New paths append, which makes the queue's order the
+ * first-visit (tree) order. */
+let recordOverlay = (f: overlayFrame): unit => {
+  let replaced = ref(false);
+  let updated =
+    List.map(
+      (existing: overlayFrame) =>
+        if (existing.ofPath == f.ofPath) {
+          replaced := true;
+          f;
+        } else {
+          existing;
+        },
+      overlayQueue^,
+    );
+  overlayQueue := (replaced^ ? updated : updated @ [f]);
+};
+
 /* Reset component tracking at start of render */
 let resetComponentTracking = (): unit => {
   Hooks.instance().renderedComponentIds := [];
@@ -218,6 +276,11 @@ let resetComponentTracking = (): unit => {
      as renderedComponentIds above - Hooks.commitFocus consumes the previous
      render's list right after this frame's collectKeyHandlers. */
   Hooks.resetFocusRegistrations();
+  /* Overlays (B2): last frame's layers describe a frame that is about to be
+     replaced. A modal that closed this frame must leave no layer behind, or
+     the composite would paint it again and Hooks would still be routing
+     input to it. */
+  overlayQueue := [];
 };
 
 /* Generate (or reuse) the stable component ID for a component identity path.
@@ -262,6 +325,24 @@ let currentConstraints: ref(constraints) = ref(defaultConstraints);
 let getConstraints = (): constraints => currentConstraints^;
 
 /* ============================================================================
+ * The frame (B2)
+ * ============================================================================ */
+
+/* The WHOLE frame's size, (width, height), as every render loop set it at the
+ * top of this frame.
+ *
+ * Distinct from [currentConstraints], which NARROWS during the descent: by
+ * the time an <Overlay> nested three panes deep renders, currentConstraints
+ * describes that pane, and centring a modal in it would put the dialog in the
+ * corner of the pane rather than in the middle of the window. An overlay is a
+ * frame-level object, so its box and its position resolve against this.
+ *
+ * Transient within a frame (like currentConstraints and clipStack), so a
+ * module-level ref is enough; resetContainerStack below seeds it, and every
+ * render loop calls that. */
+let frameSize: ref((int, int)) = ref((80, 24));
+
+/* ============================================================================
  * Container queries (A1)
  * ============================================================================ */
 
@@ -277,9 +358,15 @@ let getConstraints = (): constraints => currentConstraints^;
  * module-level ref is enough. */
 let containerStack: ref(list(constraints)) = ref([]);
 
-/* Start a frame's container stack: one entry covering the whole frame. */
-let resetContainerStack = (constraints: constraints): unit =>
+/* Start a frame's container stack: one entry covering the whole frame.
+ *
+ * Also records the frame's size (B2). The two always change together - both
+ * mean "this is the whole window this frame" - so one call sets both and
+ * they cannot drift apart. */
+let resetContainerStack = (constraints: constraints): unit => {
   containerStack := [constraints];
+  frameSize := (max(0, constraints.availWidth), max(0, constraints.availHeight));
+};
 
 /* The nearest enclosing container's box, or the whole frame when there is no
  * <Container> above this point. An empty stack means nothing reset it (only
@@ -421,6 +508,13 @@ let rec getSizeHint = (el: Element.t): option(Element.size) => {
    * still this child's size hint, or wrapping something would change the
    * frame. */
   | Element.Container(child) => getSizeHint(child)
+  /* NOT recursed into: an <Overlay>'s ovWidth/ovHeight size the FLOATING BOX
+   * against the frame and say nothing about the stack slot this node sits in
+   * (which is zero-sized - see isInvisibleToLayout below). Falling through to
+   * None is therefore right, and is what the wildcard already does; the arm
+   * is spelled out so a later edit to the wildcard cannot silently start
+   * leaking a modal's width into its parent stack's flex math. */
+  | Element.Overlay(_, _) => None
   | _ => None
   };
 };
@@ -435,6 +529,12 @@ let rec unwrapSized = (el: Element.t): Element.t => {
   | Element.Sized(child, _) => unwrapSized(child)
   | Element.Lazy(f) => unwrapSized(f())
   | Element.Container(child) => Element.Container(unwrapSized(child))
+  /* An <Overlay> is returned WHOLE, never unwrapped into its child: the node
+   * itself is what carries the box, the clip, the container push and the
+   * membership capture. (This is what the wildcard already does; spelled out
+   * beside Container's rebuild so the difference between "transparent
+   * wrapper" and "opaque node" is visible at the point of decision.) */
+  | Element.Overlay(_, _) => el
   | _ => el
   };
 };
@@ -463,6 +563,13 @@ let rec unwrapSized = (el: Element.t): Element.t => {
 let rec isInvisibleToLayout = (el: Element.t): bool => {
   switch (el) {
   | Element.Static(_) => true
+  /* An <Overlay> floats over the FINISHED frame (B1): it is composited after
+   * layout, so it must cost the stack that holds it nothing at all - not a
+   * row, not a gap slot, not a justify share. Same contract as <Static>, and
+   * the reason <Modal> is Lazy(Overlay(...)) rather than a component: this
+   * function does not look through Component (see below), so a
+   * component-wrapped modal WOULD take a layout slot. */
+  | Element.Overlay(_, _) => true
   | Element.Empty => true
   | Element.Sized(child, _) => isInvisibleToLayout(child)
   | Element.Lazy(f) => isInvisibleToLayout(f())
@@ -831,6 +938,204 @@ let rec renderElement =
       }
       };
 
+    | Element.Overlay(_, _) when measuring || origin == None =>
+      /* NOT the committed pass, so there is nothing to float and nothing to
+       * record - and, deliberately, the child is not visited at all.
+       *
+       * Measuring mode is obviously not it: an overlay contributes no size
+       * to anything (isInvisibleToLayout), so a measurement has nothing to
+       * compute here. An origin-less REAL pass is the other one, and covers
+       * two cases exactly: HStack's natural-height pre-pass (whose output is
+       * thrown away), and a <Static> item's render, which happens outside
+       * the live region entirely. A layer recorded from either would be
+       * painted from a pass that is not the frame - so an <Overlay> inside a
+       * <Static> records nothing, by construction rather than by a special
+       * case.
+       *
+       * This is the same `!measuring && origin != None` discrimination the
+       * Viewport case uses, and it is why the two stack cases thread
+       * ~origin? through their layout-invisible partition (see the VStack
+       * case). */
+      ""
+
+    | Element.Overlay(child, opts) =>
+      /* THE COMMITTED PASS (B2). Render the child into its own box, in FRAME
+       * coordinates, and queue the result for compositeOverlays - which
+       * splices it over the finished frame after layout is done. This case
+       * returns "" either way: an overlay contributes nothing to the string
+       * its parent is building.
+       *
+       * Everything resolves against frameSize, never against `constraints`.
+       * By the time this node renders, `constraints` describes whatever slot
+       * the stack holding the <Modal> happened to be in; a floating layer is
+       * a frame-level object and centring it in a pane would put it in that
+       * pane's corner. */
+      let (fw, fh) = frameSize^;
+      let childP = childPath(path, 0);
+
+      /* The child's NATURAL size, for an Auto dimension.
+       *
+       * Measured with the dimension being determined set to 0 - the
+       * "unconstrained, tell me what you want" convention HStack's first
+       * pass already uses - and with those same constraints pushed as the
+       * CONTAINER, so the measure pass and the real pass agree about what
+       * useContainerSize() reports. Zero for the unknown axis is what breaks
+       * the circularity a self-sizing child would otherwise create: <Modal>
+       * draws (container height - 2) rows of border, so measuring it under
+       * the frame's height would answer "as tall as the frame" instead of
+       * "as tall as my content plus two". */
+      let measureChild = (~w: int, ~h: int, ~wantWidth: bool): int => {
+        let c = {availWidth: w, availHeight: h};
+        let saved = containerStack^;
+        containerStack := [c, ...saved];
+        let out =
+          Fun.protect(~finally=() => containerStack := saved, () =>
+            renderElement(~measuring=true, child, rootCtx, c, ~path=childP)
+          );
+        let lines = Element.splitLines(out);
+        if (wantWidth) {
+          List.fold_left(
+            (m, l) => max(m, Element.visibleLength(l)),
+            0,
+            lines,
+          );
+        } else {
+          List.length(lines);
+        };
+      };
+
+      /* Width first: an Auto HEIGHT has to be measured at the final width,
+       * or a wrapped line inside the dialog would wrap differently in the
+       * measurement than it does when painted. */
+      let boxW =
+        switch (opts.ovWidth) {
+        | Element.Chars(n) => max(0, min(n, fw))
+        | Element.Percent(p) => max(0, min(fw * p / 100, fw))
+        | Element.Flex(_) => max(0, fw)
+        | Element.Auto =>
+          max(0, min(measureChild(~w=fw, ~h=0, ~wantWidth=true), fw))
+        };
+      let boxH =
+        switch (opts.ovHeight) {
+        | Element.Chars(n) => max(0, min(n, fh))
+        | Element.Percent(p) => max(0, min(fh * p / 100, fh))
+        | Element.Flex(_) => max(0, fh)
+        | Element.Auto =>
+          max(0, min(measureChild(~w=boxW, ~h=0, ~wantWidth=false), fh))
+        };
+
+      /* Horizontally always centred; vertically per ovAlign, clamped so the
+       * box cannot start outside the frame. */
+      let ox = max(0, (fw - boxW) / 2);
+      let oy =
+        switch (opts.ovAlign) {
+        | Element.OverlayCenter => max(0, (fh - boxH) / 2)
+        | Element.OverlayTop(n) => max(0, min(max(0, n), max(0, fh - boxH)))
+        | Element.OverlayBottom(n) => max(0, fh - boxH - max(0, n))
+        };
+
+      if (boxW <= 0 || boxH <= 0) {
+        /* A degenerate box paints nothing and owns nothing. The child is not
+           rendered, so its components unmount - which is the honest reading
+           of "this layer has no room to exist". */
+        "";
+      } else {
+        let boxConstraints = {availWidth: boxW, availHeight: boxH};
+        let savedClip = clipStack^;
+        let savedContainer = containerStack^;
+
+        /* The clip REPLACES the enclosing one (it is intersected with the
+         * FRAME, not with clipTop()): a modal opened from inside a
+         * <ScrollView> floats over the whole window and must not inherit
+         * that scroller's visible rect, or half the dialog would be
+         * unhittable. Pushing onto the stack is what "replace" means here -
+         * clipTop() reads the head. */
+        clipStack :=
+          [
+            Mouse.intersect(
+              {Mouse.rx: ox, ry: oy, rw: boxW, rh: boxH},
+              {Mouse.rx: 0, ry: 0, rw: max(0, fw), rh: max(0, fh)},
+            ),
+            ...savedClip,
+          ];
+        /* An overlay IS a container (A1): dialog content is responsive to
+         * the dialog, with no extra API and no escape hatch. */
+        containerStack := [boxConstraints, ...savedContainer];
+
+        /* MEMBERSHIP. recordRenderedComponent only ever PREPENDS, so every
+         * id the child's render adds sits in front of whatever was there
+         * before it, as one contiguous prefix. Save the list's head cell
+         * now and walk the new list with === until we reach that exact cell
+         * again: the cells walked over are precisely this layer's members.
+         * Physical identity, not structural - the list holds ints, so a
+         * structural stop test would stop at the first id that merely EQUALS
+         * the old head. */
+        let idsRef = Hooks.instance().renderedComponentIds;
+        let savedIds = idsRef^;
+
+        let rendered =
+          Fun.protect(
+            ~finally=() => {
+              clipStack := savedClip;
+              containerStack := savedContainer;
+            },
+            () =>
+            /* ~origin in FRAME coordinates, so every componentBounds rect
+               the child records is directly hit-testable against a mouse
+               event without any per-layer rebasing. */
+            renderElement(
+              ~origin=(ox, oy),
+              child,
+              rootCtx,
+              boxConstraints,
+              ~path=childP,
+            )
+          );
+
+        let members: ref(list(Element.componentId)) = ref([]);
+        let rec collectMembers = (lst: list(Element.componentId)): unit =>
+          if (lst === savedIds) {
+            ();
+          } else {
+            switch (lst) {
+            | [] => ()
+            | [id, ...rest] =>
+              members := [id, ...members^];
+              collectMembers(rest);
+            };
+          };
+        collectMembers(idsRef^);
+
+        /* Clip to the box's rows and pad up to exactly boxH of them, so the
+         * compositor can splice row-for-row without a bounds check.
+         * sliceLines rather than a plain line split: a style opened on an
+         * earlier row has to be re-opened on the first row that survives the
+         * cut, or the tail of the dialog renders unstyled. Rows are NOT
+         * padded to boxW here - the compositor pads every row it splices,
+         * which is what makes the layer opaque. */
+        let clipped =
+          Element.splitLines(
+            StyledText.sliceLines(rendered, ~from=0, ~count=boxH),
+          );
+        let have = List.length(clipped);
+        let lines =
+          have >= boxH
+            ? clipped : clipped @ List.init(boxH - have, _ => "");
+
+        recordOverlay({
+          ofPath: path,
+          ofLines: lines,
+          ofX: ox,
+          ofY: oy,
+          ofW: boxW,
+          ofH: boxH,
+          ofShadow: opts.ovShadow,
+          ofOnDismiss: opts.ovOnDismiss,
+          ofMembers: members^,
+        });
+        "";
+      };
+
     | Element.Static(items) when measuring =>
       /* A Static node has no size, so a measurement has nothing to compute -
        * and the items must NOT be rendered here. Measuring is not a commit:
@@ -1007,12 +1312,31 @@ let rec renderElement =
        * see the live children. Being size 0 would not be enough - a size-0
        * child would still take a gap slot and a share of the justify
        * spacing. They are rendered (which is what commits their items; see
-       * the Static case above) at their original index's path. */
+       * the Static case above) at their original index's path.
+       *
+       * ~origin IS threaded through this loop (B2), even though nothing in
+       * this partition paints into the stack. An <Overlay> is invisible to
+       * layout, so it lands in THIS list, and its "am I the committed pass?"
+       * test is `!measuring && origin != None` - the same test the Viewport
+       * case uses, and the only reliable one (a frame walks a subtree more
+       * than once). Without the origin an <Overlay> placed directly in a
+       * stack would never see a committed pass and would never record a
+       * layer. Inert for the other invisible kinds: Empty ignores it, and
+       * the Static case ignores it too - its recursive item renders
+       * deliberately pass none. And what the overlay does with it is read a
+       * BOOLEAN, not a coordinate: the box resolves against frameSize, never
+       * against this stack's position. */
       let (statics, live) = partitionStatic(children);
       List.iter(
         ((i, child)) =>
           ignore(
-            renderElement(child, rootCtx, constraints, ~path=childPath(path, i)),
+            renderElement(
+              ~origin?,
+              child,
+              rootCtx,
+              constraints,
+              ~path=childPath(path, i),
+            ),
           ),
         statics,
       );
@@ -1180,12 +1504,19 @@ let rec renderElement =
 
       /* Static children are filtered out of every layout computation, and
        * rendered once (not once per pass) - see the VStack case above for
-       * the full reasoning. */
+       * the full reasoning, including why ~origin is threaded (B2: it is how
+       * an <Overlay> in this partition recognizes the committed pass). */
       let (statics, live) = partitionStatic(children);
       List.iter(
         ((i, child)) =>
           ignore(
-            renderElement(child, rootCtx, constraints, ~path=childPath(path, i)),
+            renderElement(
+              ~origin?,
+              child,
+              rootCtx,
+              constraints,
+              ~path=childPath(path, i),
+            ),
           ),
         statics,
       );
@@ -1754,6 +2085,170 @@ let renderDetachedComponent = (el: Element.t): string => {
 let () = Element.componentRenderer := Some(renderDetachedComponent);
 
 /* ============================================================================
+ * Compositing floating layers (B2/B4)
+ * ============================================================================ */
+
+/* Add [Element.Dim] to every cell of [row] in columns [from, from+len).
+ *
+ * DIM, NOT PAINT. The cells keep their glyphs and their own styles - a log
+ * line under a modal's shadow is still readable, just darker - which is the
+ * whole reason the backdrop is a shadow rather than a wash. Cells the row
+ * does not actually have are not invented: splitAtWidth simply yields an
+ * empty middle for a short row, so the shadow dims what is underneath it and
+ * nothing else. */
+let dimColumns =
+    (row: list(StyledText.chunk), ~from: int, ~len: int)
+    : list(StyledText.chunk) =>
+  if (len <= 0) {
+    row;
+  } else {
+    let (left, rest) = StyledText.splitAtWidth(row, max(0, from));
+    let (mid, right) = StyledText.splitAtWidth(rest, len);
+    left
+    @ List.map(
+        (c: StyledText.chunk) => {
+          ...c,
+          StyledText.styles: StyledText.addStyle(c.StyledText.styles, Element.Dim),
+        },
+        mid,
+      )
+    @ right;
+  };
+
+/* Splice this frame's floating layers over the finished frame, and publish
+ * them to Hooks so input routing knows what is open.
+ *
+ * Called at the ONE splice point every render loop has, immediately after the
+ * render walk and before anything consumes the frame:
+ *
+ *   render tree -> compositeOverlays -> drain statics -> paint -> commit
+ *
+ * That position matters twice over. It is after layout, so a layer costs the
+ * layout nothing and can be positioned in frame coordinates; and it is before
+ * collectKeyHandlers/commitFocus/dispatch, so the layer stack those read is
+ * this frame's.
+ *
+ * NOTHING OPEN IS THE FAST PATH: [base] comes back PHYSICALLY unchanged - not
+ * re-parsed, not re-baked, not reallocated - so every frame of every
+ * application that has no overlay is byte-for-byte what it was before this
+ * function existed. That is what keeps the whole golden suite valid. It is
+ * also why the "composite" Perf span is opened only when there is something
+ * to composite: an app with no modal shows no such span at all.
+ *
+ * THE SPLICE, per layer (bottom-most first, so a later sibling floats over an
+ * earlier one) and per row y = ofY + r:
+ *
+ *   left  = pad(fst(split(baseRow, ofX)), ofX)
+ *   ov    = pad(fst(split(overlayRow, avail)), avail)
+ *   right = snd(split(snd(split(baseRow, ofX)), avail))
+ *   row  := left @ ov @ right
+ *
+ * The two nested splits are the "drop exactly the columns the box covers"
+ * operation - see StyledText.splitAtWidth, which also explains what happens
+ * to a double-width cell straddling either edge. The two pads are what make
+ * the layer OPAQUE: a base row shorter than ofX still gets the box at the
+ * right column, and a dialog row shorter than the box still writes every one
+ * of its cells.
+ */
+let compositeOverlays = (base: string): string => {
+  let st = Hooks.instance();
+  switch (overlayQueue^) {
+  | [] =>
+    Hooks.setOverlayLayers(st, []);
+    base;
+  | frames =>
+    Perf.span("composite", () => {
+      let (fw, fh) = frameSize^;
+
+      /* Publish topmost-first (the queue is bottom-most first). */
+      Hooks.setOverlayLayers(
+        st,
+        List.rev_map(
+          (f: overlayFrame) => {
+            let members = Hashtbl.create(max(1, List.length(f.ofMembers)));
+            List.iter(id => Hashtbl.replace(members, id, ()), f.ofMembers);
+            {
+              Hooks.olMembers: members,
+              olBox: {Mouse.rx: f.ofX, ry: f.ofY, rw: f.ofW, rh: f.ofH},
+              olOnDismiss: f.ofOnDismiss,
+            };
+          },
+          frames,
+        ),
+      );
+
+      /* Parse the base ONCE, into one mutable row array. A layer may reach
+         past the last line the application rendered (a short app in a tall
+         terminal), so the array is grown to whatever the deepest layer
+         needs - clipped to the frame, which is where the box was clamped. */
+      let parsed = StyledText.parse(base);
+      let baseLen = List.length(parsed);
+      let needed =
+        List.fold_left(
+          (m, f: overlayFrame) => max(m, min(fh, f.ofY + f.ofH)),
+          baseLen,
+          frames,
+        );
+      let rows = Array.make(max(1, needed), []);
+      List.iteri((i, line) => rows[i] = line, parsed);
+      let numRows = Array.length(rows);
+
+      List.iter(
+        (f: overlayFrame) => {
+          /* The shadow goes down FIRST, so the layer's own content cannot be
+             dimmed by it. An L offset by (+1, +1): a two-column strip down
+             the right side, and a strip along the bottom. Two columns
+             because a terminal cell is roughly twice as tall as it is wide,
+             so a one-column shadow reads as a hairline. It never grows the
+             frame - a shadow with nothing underneath it is nothing. */
+          if (f.ofShadow) {
+            for (y in f.ofY + 1 to f.ofY + f.ofH - 1) {
+              if (y >= 0 && y < numRows) {
+                rows[y] = dimColumns(rows[y], ~from=f.ofX + f.ofW, ~len=2);
+              };
+            };
+            let by = f.ofY + f.ofH;
+            if (by >= 0 && by < numRows) {
+              rows[by] =
+                dimColumns(rows[by], ~from=f.ofX + 1, ~len=f.ofW + 1);
+            };
+          };
+
+          let avail = max(0, min(f.ofW, fw - f.ofX));
+          if (avail > 0) {
+            List.iteri(
+              (r, line) => {
+                let y = f.ofY + r;
+                if (y >= 0 && y < numRows) {
+                  let baseRow = rows[y];
+                  let (leftRaw, rest) =
+                    StyledText.splitAtWidth(baseRow, f.ofX);
+                  let left = StyledText.padChunksToWidth(leftRaw, f.ofX);
+                  let (_covered, right) =
+                    StyledText.splitAtWidth(rest, avail);
+                  let ovRow =
+                    switch (StyledText.parse(line)) {
+                    | [l, ..._] => l
+                    | [] => []
+                    };
+                  let (ovCut, _) = StyledText.splitAtWidth(ovRow, avail);
+                  let ov = StyledText.padChunksToWidth(ovCut, avail);
+                  rows[y] = left @ ov @ right;
+                };
+              },
+              f.ofLines,
+            );
+          };
+        },
+        frames,
+      );
+
+      StyledText.bake(Array.to_list(rows));
+    })
+  };
+};
+
+/* ============================================================================
  * Static output drain (A4)
  * ============================================================================ */
 
@@ -2027,11 +2522,15 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
          made outside every <Container> answers "the window". */
       resetContainerStack(constraints);
 
-      let output =
+      let rendered =
         Perf.span("render", () => {
           let element = C.make();
           renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
         });
+      /* Floating layers (B2), spliced over the finished frame and published
+       * to Hooks for input routing. Returns `rendered` physically unchanged
+       * when nothing is open. */
+      let output = compositeOverlays(rendered);
       /* Static output (A4) is committed ABOVE the frame, one line each, in
        * exactly the position the interactive loop would put it. An
        * application that uses neither <Static> nor useStdout drains an
@@ -2064,11 +2563,24 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
       Hooks.instance().currentContext := None;
   });
 
-  let flushDirty = () =>
-    if (running^ && ctx.needsRerender) {
+  /* Bring the frame up to date between two events decoded from one read.
+     Loops rather than rendering once, and bounded: a frame's COMMIT can
+     leave the app dirty - commitFocus assigning autoFocus is the common
+     case, and opening a modal hits it every time - and the handlers the NEXT
+     event is dispatched to are the ones the last COMPLETED frame collected.
+     Render only once and a Ctrl+K and the character after it, arriving in
+     the same read(), would deliver that character to handlers collected
+     before focus moved into the dialog: silently dropped. The main loop
+     below converges on its own (it re-renders every iteration), so this is
+     only about events that share a read. */
+  let flushDirty = () => {
+    let guard = ref(0);
+    while (running^ && ctx.needsRerender && guard^ < 8) {
+      incr(guard);
       ctx.needsRerender = false;
       renderFrame();
     };
+  };
 
   /* Main loop */
   while (running^) {
@@ -2383,11 +2895,15 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
            made outside every <Container> answers "the window". */
         resetContainerStack(constraints);
 
-        let output =
+        let rendered =
           Perf.span("render", () => {
             let element = C.make();
             renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
           });
+        /* Floating layers (B2). Physically unchanged when nothing is open,
+         * so the LiveRegion patch below stays the pure in-place frame diff
+         * it has always been for an application without a modal. */
+        let output = compositeOverlays(rendered);
 
         /* Everything the frame wants to commit above the live region, in
          * order (see drainStaticLines). Empty for an application that uses
@@ -2513,11 +3029,14 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
        deliverAll between two events from the same read. Guarded on running:
        a handler that called quit() has already erased/parked the region and
        must not repaint it. */
-    let flushDirty = () =>
-      if (running^ && ctx.needsRerender) {
+    let flushDirty = () => {
+      let guard = ref(0);
+      while (running^ && ctx.needsRerender && guard^ < 8) {
+        incr(guard);
         ctx.needsRerender = false;
         renderFrame();
       };
+    };
 
     /* Main loop */
     while (running^) {
@@ -2683,11 +3202,14 @@ let startHeadless =
        made outside every <Container> answers "the window". */
     resetContainerStack(constraints);
 
-    let output =
+    let rendered =
       Perf.span("render", () => {
         let element = C.make();
         renderElement(~origin=(0, 0), element, ctx, constraints, ~path="");
       });
+    /* Floating layers (B2). getOutput() below therefore shows the modal, and
+     * Hooks has this frame's layer stack before collectKeyHandlers runs. */
+    let output = compositeOverlays(rendered);
 
     /* Static commits belong to the frame that produced them, so they are
        drained here, in the same place the real loops drain them. */
@@ -2714,6 +3236,32 @@ let startHeadless =
     lastOutput := output;
     output;
   });
+
+  /* Render until the application is QUIET, exactly as the interactive loops
+     do, and never leave the handle holding an unsettled frame.
+
+     A frame's COMMIT can leave the app dirty - commitFocus assigning
+     autoFocus (B1 step 3) is the common case, and a modal opening mid-session
+     hits it every time. That matters beyond cosmetics, because the handlers a
+     key is dispatched to are the ones collectKeyHandlers built during the
+     LAST COMPLETED frame: render only once after an event and the next key is
+     delivered to a frame that had not settled yet. Open a palette whose input
+     has ~autoFocus and the first character typed after it lands on handlers
+     collected before focus moved in - i.e. nowhere, and the keystroke is
+     silently dropped.
+
+     Runtime.start does not have this problem: its `while (running)` body
+     re-renders for as long as needsRerender is set before it blocks on input
+     again. This is what makes the handle faithful to that. Bounded, so an
+     application that dirties itself on every commit cannot hang a test
+     instead of failing one. */
+  let settle = (): unit => {
+    let guard = ref(0);
+    while (ctx.needsRerender && guard^ < 8) {
+      incr(guard);
+      ignore(doRender());
+    };
+  };
 
   /* Advance the virtual clock, firing timers deadline-by-deadline (not
      coalesced - see the headlessHandle.advanceTime doc comment above). At
@@ -2744,9 +3292,7 @@ let startHeadless =
       | Some(deadline) when deadline <= target =>
         virtualNow := deadline;
         Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
-        if (ctx.needsRerender) {
-          ignore(doRender());
-        };
+        settle();
       | _ =>
         virtualNow := target;
         keepGoing := false;
@@ -2754,17 +3300,10 @@ let startHeadless =
     };
   };
 
-  /* Initial render. doRender's own commitFocus runs AFTER this first render
-     has already produced output, so an autoFocus assignment made by that
-     commit (B1 step 3) would otherwise only become visible on the SECOND
-     call to getOutput()/getFocusedId() - one frame later than every other
-     headless app-under-test gets to observe its own initial state. Render a
-     second time, immediately, when that first commit left the app dirty, so
-     autoFocus is visible in the very first observable frame. */
+  /* Initial render, then settle - so autoFocus is visible in the very first
+     observable frame, one frame earlier than commitFocus alone would make it. */
   let _ = doRender();
-  if (ctx.needsRerender) {
-    ignore(doRender());
-  };
+  settle();
 
   /* Build and return the handle */
   {
@@ -2774,11 +3313,9 @@ let startHeadless =
         Perf.span("dispatch-key", () =>
           Hooks.dispatchKey(ctx, key, modifiers)
         );
-        /* Re-render if state changed */
-        if (ctx.needsRerender) {
-          let _ = doRender();
-          ();
-        };
+        /* Re-render if state changed, then keep going until the app is
+           quiet - see [settle] above for why one frame is not enough. */
+        settle();
       },
 
     /* Simulate a bracketed paste, bypassing the byte-level decoder
@@ -2797,10 +3334,7 @@ let startHeadless =
             Key.noModifiers,
           )
         );
-        if (ctx.needsRerender) {
-          let _ = doRender();
-          ();
-        };
+        settle();
       },
 
     /* Deliver a mouse event straight to dispatchMouse. No coordinate
@@ -2811,10 +3345,7 @@ let startHeadless =
       if (running^) {
         activate();
         Perf.span("dispatch-mouse", () => Hooks.dispatchMouse(ctx, ev));
-        if (ctx.needsRerender) {
-          let _ = doRender();
-          ();
-        };
+        settle();
       },
 
     getOutput: stripAnsi =>
@@ -2849,7 +3380,9 @@ let startHeadless =
     render: () => {
       activate();
       ctx.needsRerender = true;
-      doRender();
+      ignore(doRender());
+      settle();
+      lastOutput^;
     },
 
     resize: (w, h) => {
@@ -2857,8 +3390,8 @@ let startHeadless =
       currentWidth := w;
       currentHeight := h;
       ctx.needsRerender = true;
-      let _ = doRender();
-      ();
+      ignore(doRender());
+      settle();
     },
 
     getSize: () => (currentWidth^, currentHeight^),
@@ -2883,6 +3416,7 @@ let startHeadless =
       if (Hooks.setTerminalBackground(myInstance, rgb)) {
         ctx.needsRerender = true;
         ignore(doRender());
+        settle();
       };
     },
   };

@@ -108,6 +108,30 @@ module WrapStyledDemo = {
     </HStack>;
 };
 
+/* A <Modal> over live content (B2): the whole composite in one frame -
+ * border, title, the shadow's L to the lower right, and the base rows
+ * surviving to the left of the box and above and below it. Auto height, so
+ * the box is exactly the dialog's content plus its two border rows. */
+module ModalDemo = {
+  let make = () =>
+    <VStack>
+      ...{
+           List.init(10, i =>
+             <Text> {"row " ++ string_of_int(i) ++ " of the application"} </Text>
+           )
+           @ [
+             <Modal isOpen=true title="Commands" align={Element.OverlayTop(2)}>
+               <VStack>
+                 <Text bold=true> "Pick an action" </Text>
+                 <Text> "> pause" </Text>
+                 <Text dim=true> "  clear" </Text>
+               </VStack>
+             </Modal>,
+           ]
+         }
+    </VStack>;
+};
+
 let run = () =>
   Test.group("Golden Frames", () => {
     /* In-process component goldens */
@@ -156,6 +180,10 @@ let run = () =>
       )
     );
 
+    Test.run("modal composited over live content", () =>
+      Golden.checkComponent("modal-over-content", ~width=50, ~height=14, (module ModalDemo))
+    );
+
     /* Example goldens - run each built example binary headlessly and
      * compare its first rendered frame. */
     Test.run("example: hello-world", () => Golden.checkExample("hello-world"));
@@ -185,6 +213,13 @@ let run = () =>
      * sits at the top, blank fill runs down the middle, and the status,
      * input box and hint rows are pinned to the bottom of all 24 rows. */
     Test.run("example: claude-code", () => Golden.checkExample("claude-code"));
+    /* command-menu's golden is the CLOSED state: `checkExample` sees one
+     * frame (stdin is /dev/null, so the app reaches EOF before any key can
+     * arrive), and that frame must contain no border at all - a <Modal> that
+     * is not open costs its stack nothing and paints nothing. The composited
+     * state is pinned by the "modal-over-content" component golden above and
+     * exercised end to end in test/commandmenu_tests.re. */
+    Test.run("example: command-menu", () => Golden.checkExample("command-menu"));
 
     /* nested-components and layout-demo call Terminal.getSize() directly
      * (bypassing the headless-aware MATCHA_WIDTH/MATCHA_HEIGHT constraints)

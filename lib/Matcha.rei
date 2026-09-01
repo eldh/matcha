@@ -160,6 +160,38 @@ module Sized: (module type of Element.Sized);
 
 module Container: (module type of Element.Container);
 
+/** Raw floating layer: [<Overlay width height align shadow onDismiss>...
+    </Overlay>]. Painted over the FINISHED frame, so it costs the stack that
+    holds it no row, no gap slot and no justify share - put it directly in
+    one. Its box resolves against the frame (not against the enclosing slot)
+    and is pushed as a container, so [useContainerSize()] inside reports the
+    layer.
+
+    Everything rendered INSIDE it is a member of the layer, and while it is
+    the topmost one only members' [useInput] handlers fire, only their
+    [useFocus] entries are in the Tab ring, and only they can be hit by the
+    mouse. [useKeyDown] is deliberately never captured.
+
+    An <Overlay> in the tree is always open; prefer {!Modal}, which adds
+    [~isOpen], a border, the Esc binding and focus restore. */
+
+module Overlay: (module type of Element.Overlay);
+
+/** Bordered dialog floating over the frame: [<Modal isOpen title onDismiss>
+    ...</Modal>]. Costs no layout space in either state - write it directly
+    in the stack next to the rest of the app.
+
+    Sizes resolve against the frame ([~width=Percent(60)],
+    [~height=Auto] by default). Esc calls [~onDismiss], as does a mouse click
+    outside the box (that click is swallowed, so it cannot also press what is
+    underneath). Focus is contained to the dialog while it is open and
+    restored to whatever held it when it closes.
+
+    In an Inline app prefer [~align={OverlayTop(n)}]: centring grows the live
+    region to the full terminal height. */
+
+module Modal: (module type of Modal);
+
 /** Append-only output committed above the live region and left in the
     terminal's scrollback: [<Static items renderItem={(item, i) => ...} />].
     Occupies no layout space; every item is rendered exactly once. */

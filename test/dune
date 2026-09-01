@@ -32,13 +32,15 @@
   paste_tests
   mouse_parse_tests
   mouse_tests
+  modal_tests
   focus_tests
   liveregion_tests
   static_tests
   scrollview_tests
   chat_tests
-  claudecode_tests)
- (libraries matcha test unix chatApp claudeCodeApp)
+  claudecode_tests
+  commandmenu_tests)
+ (libraries matcha test unix chatApp claudeCodeApp commandMenuApp)
  ; Real-PTY harness (test/pty.re). posix_openpt + fork + execve, so the
  ; end-to-end suite can drive an example binary on an actual terminal -
  ; termios, SIGWINCH, mode switching and exit-by-signal all become visible.
@@ -61,6 +63,7 @@
   ../examples/static-demo/main.exe
   ../examples/scroll-demo/main.exe
   ../examples/chat/main.exe
-  ../examples/claude-code/main.exe)
+  ../examples/claude-code/main.exe
+ ../examples/command-menu/main.exe)
  (preprocess
   (pps ppx_component)))

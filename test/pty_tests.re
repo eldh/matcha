@@ -27,6 +27,7 @@
 
 let chatBin = "examples/chat/main.exe";
 let ccBin = "examples/claude-code/main.exe";
+let cmBin = "examples/command-menu/main.exe";
 
 /* Index of the first screen row containing `needle`, or -1. */
 let rowIndexContaining = (vt: Vterm.t, needle: string): int => {
@@ -411,6 +412,97 @@ let run = () => {
               Pty.waitExit(~timeoutMs=6000, s),
               "quit after resize",
             );
+          })
+        });
+
+        /* ==================================================================
+         * command-menu: an overlay on a real terminal (B2)
+         *
+         * The one PTY case for modals, and it earns its place twice. The
+         * SHADOW is asserted through the independent grid model, so "the
+         * backdrop dims the cells underneath" is checked against what a
+         * terminal actually holds rather than against a substring of our own
+         * output. And Ctrl+C is sent WHILE THE MODAL IS OPEN: raw mode
+         * disables ISIG, so if a layer could ever swallow that key the child
+         * would never exit and this would come back Signaled(2) - the app
+         * would be unquittable for a real user.
+         * ================================================================ */
+        Test.run("command-menu: Ctrl+K opens over a live log, Ctrl+C still quits", () => {
+          Pty.withSession(~width=100, ~height=30, cmBin, [], s => {
+            /* quietMs must be UNDER the app's own 200ms stream tick, or the
+               drain would only ever end on its timeout. */
+            Pty.drain(~quietMs=120, ~timeoutMs=6000, s);
+            Test.assertContains(Pty.screen(s), "log stream", "the log pane painted");
+            Test.assertContains(Pty.screen(s), "RUNNING", "and it is streaming");
+            Test.assertFalse(
+              Test.contains(Pty.screen(s), "Commands"),
+              "no dialog before Ctrl+K",
+            );
+
+            /* Ctrl+K is byte 11 - unclaimed by every terminal. */
+            Pty.send(s, "\011");
+            Pty.drain(~quietMs=120, ~timeoutMs=6000, s);
+
+            let vt = Pty.vterm(s);
+            let top = rowIndexContaining(vt, "Commands");
+            Test.assertTrue(top >= 0, "the dialog's title row is on screen");
+
+            /* Find the box's left edge on the grid rather than recomputing
+               the layout here: whatever the runtime placed is what the
+               shadow has to be measured against. */
+            let (width, _) = Vterm.size(vt);
+            let ox = ref(-1);
+            for (c in 0 to width - 1) {
+              if (ox^ < 0 && Vterm.cellGlyph(vt, ~row=top, ~col=c) == "\xe2\x94\x8c") {
+                ox := c;
+              };
+            };
+            Test.assertTrue(ox^ >= 0, "the top-left corner glyph is on the grid");
+            /* ~width=Percent(60) of a 100-column terminal. */
+            let boxW = 60;
+            let right = ox^ + boxW;
+            let dim = (~row, ~col) => List.mem(2, Vterm.cellSgr(vt, ~row, ~col));
+
+            Test.assertTrue(
+              dim(~row=top + 1, ~col=right),
+              "the drop shadow's first column carries SGR 2 on a REAL terminal",
+            );
+            Test.assertTrue(
+              dim(~row=top + 1, ~col=right + 1),
+              "and its second - a cell is about twice as tall as it is wide, "
+              ++ "so a one-column shadow would read as a hairline",
+            );
+            Test.assertFalse(
+              dim(~row=top + 1, ~col=right + 2),
+              "a cell just outside the L is not dimmed",
+            );
+            Test.assertFalse(
+              dim(~row=top, ~col=right),
+              "and the strip starts one row BELOW the box - the shadow is "
+              ++ "offset by (+1, +1)",
+            );
+            /* The base frame survives immediately left of the box: the cell
+               there is ordinary log content, not a border glyph the splice
+               bled outwards, and not dimmed either (the shadow is on the
+               other side). */
+            let leftCell = Vterm.cellGlyph(vt, ~row=top, ~col=max(0, ox^ - 1));
+            Test.assertFalse(
+              leftCell == "\xe2\x94\x8c" || leftCell == "\xe2\x94\x80",
+              "no border glyph left of the box - actual: " ++ leftCell,
+            );
+            Test.assertFalse(
+              dim(~row=top, ~col=max(0, ox^ - 1)),
+              "and nothing dims the base to the LEFT of the dialog",
+            );
+            assertNoUnknown(s, "command-menu with the palette open");
+
+            /* THE GUARD. */
+            Pty.send(s, "\003");
+            assertExitedCleanly(
+              Pty.waitExit(~timeoutMs=6000, s),
+              "Ctrl+C with the modal open",
+            );
+            assertNoUnknown(s, "command-menu after quitting from a modal");
           })
         });
 

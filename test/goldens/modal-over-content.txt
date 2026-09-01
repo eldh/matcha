@@ -1,0 +1,10 @@
+row 0 of the application
+row 1 of the application
+row 2 of t┌─ Commands ─────────────────┐
+row 3 of t│ Pick an action             │
+row 4 of t│ > pause                    │
+row 5 of t│   clear                    │
+row 6 of t└────────────────────────────┘
+row 7 of the application
+row 8 of the application
+row 9 of the application

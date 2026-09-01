@@ -509,6 +509,80 @@ let takeWidthSuffix = (chunks: list(chunk), maxW: int): list(chunk) => {
   go(List.rev(chunks), [], 0);
 };
 
+/* ============================================================================
+ * splitAtWidth / padChunksToWidth: the SPLICE primitives (B3)
+ * ============================================================================ */
+
+/* Cut a chunk list at column [w], returning (prefix, suffix).
+ *
+ * This is what [takeWidthPrefix]/[takeWidthSuffix] above cannot express:
+ * "drop exactly the columns a box covers and keep BOTH sides". Splicing an
+ * overlay into a base row needs the columns to the left of the box, the box
+ * itself, and the columns to the right of it - and the third piece is
+ * `snd(splitAtWidth(snd(splitAtWidth(row, x)), boxW))`, which no prefix/suffix
+ * pair can name (a suffix is measured from the END of the line, so it depends
+ * on the line's total width, not on where the box sits).
+ *
+ * A DOUBLE-WIDTH CELL STRADDLING THE CUT becomes a blank cell of its own
+ * style on BOTH sides - the same rule [Element.padToWidth] applies when a
+ * wide character would overflow a width limit. Splitting the bytes would
+ * emit half a codepoint; dropping the cell would shift every column to its
+ * right by one, which is exactly the corruption a splice must not cause.
+ *
+ * Two invariants hold for every input, and they are what make a splice
+ * column-exact:
+ *
+ *   width(fst) == min(w, width(chunks))
+ *   width(fst) + width(snd) == width(chunks)
+ *
+ * [w <= 0] yields ([], chunks); [w >= total] yields (chunks, []).
+ *
+ * Zero-width chunks (a leading combining mark - [parse] fuses the rest onto
+ * the preceding cell) go with the prefix when they sit exactly at the cut;
+ * they carry no columns, so neither invariant notices.
+ */
+let splitAtWidth =
+    (chunks: list(chunk), w: int): (list(chunk), list(chunk)) =>
+  if (w <= 0) {
+    ([], chunks);
+  } else {
+    let rec go = (cs, acc, accW) =>
+      switch (cs) {
+      | [] => (List.rev(acc), [])
+      | [c, ...rest] =>
+        if (accW + c.width <= w) {
+          go(rest, [c, ...acc], accW + c.width);
+        } else if (accW >= w) {
+          /* The cut already landed exactly between two cells. */
+          (List.rev(acc), cs);
+        } else {
+          /* accW < w < accW + c.width: only a wide cell can straddle, and it
+           * becomes a blank on each side, keeping its own style so the cut
+           * does not open a hole in a colored run. */
+          let blank = {bytes: " ", width: 1, styles: c.styles};
+          (List.rev([blank, ...acc]), [blank, ...rest]);
+        }
+      };
+    go(chunks, [], 0);
+  };
+
+/* Right-pad a chunk list with UNSTYLED blanks until it is [w] columns wide.
+ * A list already at least that wide is returned unchanged (this pads, it
+ * never truncates - pair it with [splitAtWidth] when a hard cap is wanted).
+ *
+ * This is what makes an overlay OPAQUE: a modal row shorter than the box
+ * still has to write every cell of that box, or the base frame shows through
+ * the gap. Unstyled blanks, deliberately - a padded cell must not inherit
+ * whatever colour the row's last chunk happened to leave open. */
+let padChunksToWidth = (chunks: list(chunk), w: int): list(chunk) => {
+  let have = chunkListWidth(chunks);
+  if (have >= w) {
+    chunks;
+  } else {
+    chunks @ List.init(w - have, _ => {bytes: " ", width: 1, styles: []});
+  };
+};
+
 /* Truncate = unchanged when the line already fits in w columns; otherwise
  * the longest prefix <= w-1, plus an ellipsis styled like the last kept
  * cell (or unstyled if nothing was kept, i.e. w <= 1). w <= 0 -> "". */

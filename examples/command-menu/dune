@@ -1,0 +1,14 @@
+; Component library + thin launcher, so test/commandmenu_tests.re can drive
+; the exact app the binary runs - same split as examples/chat.
+(library
+ (name commandMenuApp)
+ (modules commandMenuApp)
+ (libraries matcha)
+ (preprocess
+  (pps ppx_component)))
+
+(executable
+ (name main)
+ (public_name matcha-example-command-menu)
+ (modules main)
+ (libraries matcha commandMenuApp))

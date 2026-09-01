@@ -92,6 +92,48 @@ Consequences worth knowing before you write the component:
   and the frame disagree, at a size where they visibly do (a `Chars(30)`
   pane in a 100-column frame).
 
+### Adding a floating layer
+
+`<Modal>` (`lib/Modal.re`) is the ready-made dialog; `<Overlay>`
+(`Element.Overlay`) is the raw layer underneath it. Four rules cover almost
+everything you need to get right:
+
+1. **Put the node DIRECTLY IN A STACK, next to the rest of the app** —
+   `<VStack> <Pane/> <Modal isOpen .../> <StatusBar/> </VStack>`. It costs
+   that stack nothing in either state. Do **not** wrap it in a component of
+   your own: `isInvisibleToLayout` does not look through `Component`, so a
+   component that returns an `Overlay` takes a blank row in every stack that
+   holds it, open or closed. (`Modal.createElement` returns
+   `Lazy(() => isOpen ? Overlay(...) : Empty)` for exactly this reason.)
+2. **Layer keys go INSIDE with `useInput`; globals go OUTSIDE with
+   `useKeyDown`.** Only what is rendered inside the `Overlay`'s child is a
+   *member* of the layer, and only members' `useInput` handlers fire while it
+   is topmost. `useKeyDown` is never captured — which is what keeps Ctrl+C
+   working, and why **binding Ctrl+C with `useInput` makes your app
+   unquittable under a modal** (raw mode has no ISIG). A hook written in a
+   component that merely *returns* the overlay is outside the layer and would
+   be suppressed by its own dialog.
+3. **The dialog is its own container.** An overlay pushes its box onto
+   `containerStack`, so `useContainerSize()` inside reports the dialog, not
+   the window. There is no escape hatch to reach for and none exists.
+4. **Pair the headless assertions with Vterm grid assertions.** Compositing
+   is cell surgery on already-rendered ANSI — splitting a row at a column,
+   padding it, adding `Dim` to somebody else's cells — and its failure modes
+   ("the columns right of the box shifted by one", "the shadow painted over
+   the log instead of dimming it") are invisible in `stripAnsi`'d text.
+   `test/modal_tests.re` is the pattern: feed `getOutput(false)` into
+   `Vterm.create` (rejoining lines with **CR LF**, since Vterm models a bare
+   LF the way a terminal does — down a row, same column) and assert
+   `cellGlyph`/`cellSgr`.
+
+Always at a **non-80x24** size, and always with the box somewhere other than
+dead centre, so a coordinate bug cannot hide behind a symmetric layout.
+
+If you change the compositor, the gate is: `git status test/goldens/` shows
+zero modifications. `compositeOverlays` returns its input *physically*
+unchanged when no layer is open, and that is what keeps every existing golden
+valid — if one moves, the fast path broke.
+
 Any change under 1–3 above changes rendering, so expect `dune runtest` to
 report **golden** mismatches (`test/golden_tests.re` vs `test/goldens/*.txt`).
 Read the diff before you regenerate — an unintended golden change is a bug.

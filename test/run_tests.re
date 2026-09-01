@@ -33,12 +33,14 @@ let () = {
   Paste_tests.run();
   Mouse_parse_tests.run();
   Mouse_tests.run();
+  Modal_tests.run();
   Focus_tests.run();
   Liveregion_tests.run();
   Static_tests.run();
   Scrollview_tests.run();
   Chat_tests.run();
   Claudecode_tests.run();
+  Commandmenu_tests.run();
 
   /* Print summary and exit */
   Test.finish();

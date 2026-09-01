@@ -1,0 +1,24 @@
+ log stream
+0018 info  worker 3 picked up job                                              │
+0019 info  flush: 18 rows committed                                            │
+0020 error GET /api/user 200                                                   │
+0021 info  retry scheduled in 250ms                                            │
+0022 info  connection pool at 60%                                              │
+0023 info  checkpoint written                                                  │
+0024 warn  GET /api/session 200                                                │
+0025 info  cache warm: 412 entries                                             │
+0026 info  worker 3 picked up job                                              │
+0027 error flush: 18 rows committed                                            │
+0028 info  GET /api/user 200                                                   █
+0029 info  retry scheduled in 250ms                                            █
+0030 info  connection pool at 60%                                              █
+0031 warn  checkpoint written                                                  █
+0032 info  GET /api/session 200                                                █
+0033 info  cache warm: 412 entries                                             █
+0034 error worker 3 picked up job                                              █
+0035 info  flush: 18 rows committed                                            █
+0036 info  GET /api/user 200                                                   █
+0037 info  retry scheduled in 250ms                                            █
+0038 warn  connection pool at 60%                                              █
+0039 info  checkpoint written                                                  █
+RUNNING  ·  all levels  ·  40 lines  ·  ctrl+k commands

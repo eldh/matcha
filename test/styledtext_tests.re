@@ -526,6 +526,151 @@ let run = () => {
     });
   });
 
+  /* ---------------------------------------------------------------------
+   * splitAtWidth / padChunksToWidth (B3) - the splice primitives the
+   * overlay compositor is built from. Their two invariants are what stop a
+   * spliced-in box shifting the columns to its right:
+   *   width(fst) == min(w, total)     and     width(fst)+width(snd) == total
+   * ------------------------------------------------------------------- */
+  Test.group("StyledText: splitAtWidth", () => {
+    let widthOf = StyledText.chunkListWidth;
+    let parseOne = (s: string): list(StyledText.chunk) =>
+      switch (StyledText.parse(s)) {
+      | [line, ..._] => line
+      | [] => []
+      };
+    /* The two invariants, asserted together, for one (input, w) pair. */
+    let checkInvariants = (s: string, w: int, msg: string): unit => {
+      let line = parseOne(s);
+      let total = widthOf(line);
+      let (a, b) = StyledText.splitAtWidth(line, w);
+      Test.assertEqual(
+        widthOf(a),
+        min(max(0, w), total),
+        msg ++ ": width(fst) == min(w, total)",
+      );
+      Test.assertEqual(
+        widthOf(a) + widthOf(b),
+        total,
+        msg ++ ": the two halves still add up to the whole",
+      );
+    };
+
+    Test.run("widths and round-trip on plain text", () => {
+      let line = parseOne("abcdef");
+      let (a, b) = StyledText.splitAtWidth(line, 2);
+      Test.assertEqualStr(StyledText.bake([a]), "ab", "left half");
+      Test.assertEqualStr(StyledText.bake([b]), "cdef", "right half");
+      Test.assertEqualStr(
+        StyledText.bake([a @ b]),
+        "abcdef",
+        "concatenating the halves reproduces the line",
+      );
+      checkInvariants("abcdef", 2, "cut in the middle");
+    });
+
+    Test.run("w <= 0 and w >= total are the degenerate ends", () => {
+      let line = parseOne("abc");
+      let (a0, b0) = StyledText.splitAtWidth(line, 0);
+      Test.assertEqual(List.length(a0), 0, "w=0: nothing on the left");
+      Test.assertEqualStr(StyledText.bake([b0]), "abc", "w=0: everything on the right");
+      let (an, bn) = StyledText.splitAtWidth(line, -5);
+      Test.assertEqual(List.length(an), 0, "a negative w behaves like 0");
+      Test.assertEqualStr(StyledText.bake([bn]), "abc", "negative w: all on the right");
+      let (a9, b9) = StyledText.splitAtWidth(line, 9);
+      Test.assertEqualStr(StyledText.bake([a9]), "abc", "w past the end keeps everything");
+      Test.assertEqual(List.length(b9), 0, "w past the end leaves no remainder");
+      checkInvariants("abc", 0, "w=0");
+      checkInvariants("abc", 9, "w past the end");
+      checkInvariants("", 3, "an empty line");
+    });
+
+    Test.run("a double-width cell straddling the cut blanks BOTH sides", () => {
+      /* "a" + CJK(2 cols) + "b" = 4 columns. Cutting at 2 lands inside the
+         wide cell: neither half may contain half a codepoint, and the total
+         column count must not change. */
+      let s = "a\xE6\x97\xA5b";
+      let line = parseOne(s);
+      Test.assertEqual(widthOf(line), 4, "the fixture is 4 columns wide");
+      let (a, b) = StyledText.splitAtWidth(line, 2);
+      Test.assertEqualStr(StyledText.bake([a]), "a ", "left half pads the straddle with a blank");
+      Test.assertEqualStr(StyledText.bake([b]), " b", "right half does too");
+      checkInvariants(s, 2, "straddle from the left");
+      /* And from the other side: cutting at 3 leaves the wide cell whole on
+         the left, so nothing is blanked. */
+      let (c, d) = StyledText.splitAtWidth(line, 3);
+      Test.assertEqualStr(StyledText.bake([c]), "a\xE6\x97\xA5", "cut after the wide cell keeps it intact");
+      Test.assertEqualStr(StyledText.bake([d]), "b", "and the tail is untouched");
+      checkInvariants(s, 3, "cut after the wide cell");
+      checkInvariants(s, 1, "cut before the wide cell");
+    });
+
+    Test.run("a styled cut leaves the right half re-opening the style", () => {
+      /* "ab" plain, then bold "cd". Cutting at 3 puts the bold "c" on the
+         left and the bold "d" on the right; baking the right half alone has
+         to re-emit the bold escape, or the spliced row renders unstyled. */
+      let line = parseOne("ab" ++ bold ++ "cd" ++ reset);
+      let (a, b) = StyledText.splitAtWidth(line, 3);
+      Test.assertEqualStr(StyledText.bake([a]), "ab" ++ bold ++ "c" ++ reset, "left half closes its style");
+      Test.assertEqualStr(StyledText.bake([b]), bold ++ "d" ++ reset, "right half re-opens it");
+      /* The straddle blank inherits the style of the cell it replaced. */
+      let wide = parseOne(bold ++ "\xE6\x97\xA5" ++ reset);
+      let (wa, wb) = StyledText.splitAtWidth(wide, 1);
+      Test.assertEqualStr(StyledText.bake([wa]), bold ++ " " ++ reset, "the left blank keeps the wide cell's style");
+      Test.assertEqualStr(StyledText.bake([wb]), bold ++ " " ++ reset, "so does the right one");
+    });
+
+    Test.run("the middle-of-a-row splice a compositor actually performs", () => {
+      /* left = the columns before the box, right = the columns after it -
+         the "drop exactly what the box covers" operation that neither
+         takeWidthPrefix nor takeWidthSuffix can express. */
+      let line = parseOne("0123456789");
+      let (left, rest) = StyledText.splitAtWidth(line, 3);
+      let (covered, right) = StyledText.splitAtWidth(rest, 4);
+      Test.assertEqualStr(StyledText.bake([left]), "012", "columns left of the box");
+      Test.assertEqualStr(StyledText.bake([covered]), "3456", "the columns the box covers");
+      Test.assertEqualStr(StyledText.bake([right]), "789", "columns right of the box");
+      Test.assertEqual(
+        widthOf(left) + widthOf(covered) + widthOf(right),
+        10,
+        "the three pieces still tile the row exactly",
+      );
+    });
+  });
+
+  Test.group("StyledText: padChunksToWidth", () => {
+    Test.run("pads short rows with UNSTYLED blanks and never truncates", () => {
+      let line =
+        switch (StyledText.parse(bold ++ "ab" ++ reset)) {
+        | [l, ..._] => l
+        | [] => []
+        };
+      let padded = StyledText.padChunksToWidth(line, 5);
+      Test.assertEqual(StyledText.chunkListWidth(padded), 5, "padded to exactly 5 columns");
+      Test.assertEqualStr(
+        StyledText.bake([padded]),
+        bold ++ "ab" ++ reset ++ "   ",
+        "the padding is unstyled - it must not inherit the row's open style",
+      );
+      let short = StyledText.padChunksToWidth(line, 1);
+      Test.assertEqual(
+        StyledText.chunkListWidth(short),
+        2,
+        "already wider than the target: returned unchanged, not truncated",
+      );
+      Test.assertEqual(
+        StyledText.chunkListWidth(StyledText.padChunksToWidth([], 4)),
+        4,
+        "an empty row pads to a full run of blanks - what makes an overlay opaque",
+      );
+      Test.assertEqual(
+        StyledText.chunkListWidth(StyledText.padChunksToWidth([], 0)),
+        0,
+        "a zero-width target adds nothing",
+      );
+    });
+  });
+
   Test.group("StyledText: <Text wrap> headless integration", () => {
     Test.run(
       "wraps at the layout width and agrees with the Auto sibling below it (measuring)",

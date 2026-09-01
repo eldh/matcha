@@ -73,6 +73,11 @@ let () = Runtime.start((module App));
 - **Scrolling** — `<ScrollView>` windows onto tall content: keyboard scrolling
   while focused, wheel scrolling under the pointer, optional scrollbar,
   controlled or uncontrolled.
+- **Overlays and modals** — `<Modal>` floats a bordered dialog over the
+  finished frame: no layout cost, keyboard capture, focus containment and
+  restore, click-outside to dismiss, and a drop shadow that *dims* the app
+  underneath instead of painting over it. Dialog content is responsive to the
+  dialog, not to the terminal.
 - **Headless mode** — run any app without a TTY for scripting, CI, or agent
   interaction, either via an environment variable or a programmatic handle
   with a virtual clock, synthetic input (keys, paste, mouse), and separate
@@ -168,6 +173,8 @@ dune exec matcha-example-counter
 | `<TextArea>` | Multi-line, controlled text editor with cursor/selection state. |
 | `<Static>` | Append-only output committed above the live region, into scrollback. |
 | `<ScrollView>` | Scrolling window onto content taller than its box; `~rows` virtualizes very long pre-rendered content. |
+| `<Modal>` | Bordered dialog floating over the frame. No layout cost, captures `useInput`, contains and restores focus, Esc / click-outside to dismiss. See [Overlays and modals](#overlays-and-modals). |
+| `<Overlay>` | The raw floating layer `<Modal>` is built on — same box, capture and container behaviour, no chrome. |
 | `<Clickable>` | Runs a callback when its box is clicked. |
 
 `Fragment` (groups children without adding a Stack) lives at `Element.Fragment`
@@ -533,6 +540,69 @@ Main-axis distribution (`justify`, type `Element.justify`): `JustifyStart`
 For `HStack`, `align` controls vertical alignment and `justify` controls
 horizontal distribution; for `VStack` it's the reverse.
 
+## Overlays and modals
+
+`<Modal>` floats a bordered dialog over the finished frame. Write it
+**directly in the stack**, next to the rest of your app:
+
+```reason
+<VStack>
+  <Sized size={Flex(1)}> <LogPane /> </Sized>
+  <Modal
+    isOpen=paletteOpen
+    title="Commands"
+    align={OverlayTop(2)}
+    onDismiss={() => setPaletteOpen(false)}>
+    <Palette onRun=run />
+  </Modal>
+  <Sized size={Chars(1)}> <StatusBar /> </Sized>
+</VStack>
+```
+
+It costs that stack **no row, no gap slot and no justify share**, open or
+closed — the layer is composited after layout, not laid out.
+
+| Prop | Default | Meaning |
+|---|---|---|
+| `isOpen` | *(required)* | Closed renders nothing at all. |
+| `width` | `Percent(60)` | Resolved against the **frame**, not the enclosing slot. `Chars(n)` is clamped to the frame, `Flex(_)` fills it, `Auto` is the content's natural width. |
+| `height` | `Auto` | As above; `Auto` is the content plus the two border rows. |
+| `align` | `OverlayCenter` | Vertical placement: `OverlayCenter`, `OverlayTop(n)`, `OverlayBottom(n)`. Horizontal is always centred. |
+| `title` | *(none)* | Drawn into the top border. |
+| `shadow` | `true` | A drop shadow that **adds `Dim` to the cells underneath** rather than painting over them, so live content stays readable through it. |
+| `onDismiss` | *(none)* | Run by Esc, and by a mouse click outside the box. |
+
+**The capture rule.** Everything rendered *inside* the modal is a **member**
+of its layer. While a layer is open:
+
+- `useInput` fires **only for members**. A `<ScrollView>` underneath goes
+  quiet for free, and a dialog's Esc closes the top dialog rather than all of
+  them.
+- `useKeyDown` **always** fires. This is the escape hatch for globals — and it
+  is not optional for Ctrl+C: raw mode disables ISIG, so Ctrl+C is an ordinary
+  keypress. **Bind it with `useKeyDown`, or your app cannot be quit while a
+  modal is open.**
+- Focus is contained to the dialog (Tab cannot leave it) and restored to
+  whatever held it when the dialog closes.
+- A mouse `Down` outside the box runs `onDismiss` and is swallowed whole, so
+  a dismissing click cannot also press what is underneath it.
+
+**The dialog is its own container.** `useContainerSize()` inside a modal
+reports the *modal's* box, so dialog content is responsive to the dialog and
+never to the window.
+
+**Inline apps: prefer `~align={OverlayTop(n)}`.** The default centres the
+dialog in the whole frame, and in Inline mode the frame is the terminal — so
+centring grows the live region to the full terminal height even when the app
+itself is six rows tall.
+
+`<Overlay>` (`Element.Overlay`) is the raw layer underneath `<Modal>`: the
+same box, capture, container and dismiss behaviour, without the border, the
+Esc binding, the focus restore or `~isOpen` (an `<Overlay>` in the tree is
+always open — use the usual `cond ? ... : Element.Empty`).
+
+See `examples/command-menu` for the worked case.
+
 ## Keys & modifiers
 
 `Key.t` (from `lib/Key.re`) normalizes raw terminal escape sequences:
@@ -705,6 +775,7 @@ the headless invocation shown above.
 | `static-demo` | `matcha-example-static-demo` | `<Static>` transcript above the live region, `useStdout`. |
 | `scroll-demo` | `matcha-example-scroll-demo` | `<ScrollView>`, focus ring, wheel scrolling. |
 | `chat` | `matcha-example-chat` | The capstone: `<Static>` transcript, focused `<TextArea>` with paste, `useInterval` spinner, `<ScrollView>` panel with `<Clickable>` rows. Tested end to end by `test/chat_tests.re`. |
+| `command-menu` | `matcha-example-command-menu` | The **overlay showcase**: a live log viewer (a `useInterval` stream into a virtualized `<ScrollView rows>`, inside a `<Container>`) with a Ctrl+K command palette in a `<Modal>`. The log keeps streaming while the palette is open, which is the point — a modal owns the keyboard, not the clock. Tested end to end by `test/commandmenu_tests.re`, plus a real-PTY case. |
 | `claude-code` | `matcha-example-claude-code` | The **fullscreen showcase** (`~screen=Fullscreen`): a mock of the Claude Code CLI that fills the terminal on the alternate screen with the prompt pinned to the bottom. Its transcript is app state in a stick-to-bottom controlled `<ScrollView>` (no `<Static>` — there is no scrollback to commit to), plus a timer-driven status row, a slash-command palette on a second controlled `<ScrollView>`, Shift+Tab permission modes and double-Ctrl+C to quit. Deliberately focus-free — see `test/claudecode_tests.re`. |
 
 ## Development

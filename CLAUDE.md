@@ -6,13 +6,14 @@ component tree with hooks (`useState`, `useEffect`, `useMemo`, `useInterval`,
 (`VStack`/`HStack`/`Sized` with `Flex`/`Percent`/`Chars`/`Auto` sizing),
 unicode-aware text measurement and wrapping, a normalized keyboard/paste/mouse
 input model, focus management, an append-only `<Static>` transcript above an
-inline live region, `<ScrollView>`/`<Clickable>`, and both an interactive
-terminal runtime and a headless runtime for testing/agents. The public API
-surface is `lib/Matcha.re`, pinned by the interface file `lib/Matcha.rei`;
-everything else under `lib/` is implementation. `examples/` holds 14 runnable
-sample apps (`examples/chat` is the capstone that uses most capabilities at
-once); `test/` holds a hand-rolled test suite (currently 628 tests, including
-golden frame tests).
+inline live region, `<ScrollView>`/`<Clickable>`, floating layers
+(`<Overlay>`/`<Modal>`), and both an interactive terminal runtime and a
+headless runtime for testing/agents. The public API surface is
+`lib/Matcha.re`, pinned by the interface file `lib/Matcha.rei`; everything
+else under `lib/` is implementation. `examples/` holds 15 runnable sample apps
+(`examples/chat` is the capstone that uses most capabilities at once, and
+`examples/command-menu` is the overlay one); `test/` holds a hand-rolled test
+suite (currently 674 tests, including golden frame tests).
 
 ## Toolchain
 
@@ -159,17 +160,18 @@ session outside `withSession`, and never wait on a child with a bare sleep.
 
 | Module | Responsibility | Approx. size |
 |---|---|---|
-| `lib/Element.re` | Element tree type (`Text`, `Styled`, `VStack`, `HStack`, `Sized`, `Component`, `Lazy`, `WithContext`, `Static`, `WrappedText`, `Viewport`, `Container`, `Empty`); the `color` type (16 named ANSI colors, `Rgb` into the 216-cube, `RgbFull` 24-bit truecolor emitted as `38;2`/`48;2`) and the ANSI escape/style utilities that emit it; string utils (`visibleLength`, `padToWidth`, `stripAnsi`, `repeatString`, `splitLines` — all cell-based via `TextWidth`); JSX-compatible `Text` (with `~wrap`)/`VStack`/`HStack`/`Sized`/`Container`/`Fragment`/`TextArea` (the *pure* editor renderer — `renderSegment`/`renderLine`/`make` take `~cursorVisible`; the blinking `<TextArea>` apps use is `lib/TextArea.re`). Its **soft-wrap display mapping** — `wrapSegments`/`displayRows`/`cursorDisplayRow` turn logical lines into `(logicalRow, startCell, cellCount)` display rows, `make` paints the window that keeps the cursor visible, and `measure` reports that height so a container can size itself around a growing input — is display only: `handleKeyDown` and every cursor/selection column stay logical/`Static` component modules; the simple non-layout `render` function, which delegates `Component` nodes to Runtime through the `componentRenderer` ref. `Component(typeId, key, props, renderFn)` is a pure *description* of a call site — no mutable per-instance state, no output cache. | ~1800 lines |
-| `lib/Runtime.re` | Layout engine (flex distribution, align/justify, size resolution) and `renderElement` — one recursive renderer with a real mode (applies layout) and a **measuring mode** (`~measuring=true`, layout-free, used to find an `Auto` child's natural size, so stacks visit those children twice per frame), plus `~origin` threading for mouse bounds (the *committed* pass is `!measuring && origin != None`); component identity as a tree path (`childPath`/`componentPath` → the per-instance path→stableId registry); the commit phase (render, `Hooks.commitEffects`, unmount sweep, key-handler collection, `commitFocus`, static drain); detached rendering for `Element.render`; the interactive main loop (`start(~screen: screenMode=Inline, ...)`) — `Inline` rendering through `LiveRegion` (DSR cursor tracking, relative addressing) or `Fullscreen` rendering on the alternate screen through `FrameDiff.diff` (frame padded to `termHeight`, absolute addressing, `<Static>`/`useStdout` rejected), terminal setup, SIGWINCH, wake-pipe, `InputDecoder`-fed event dispatch, interest-driven mouse-mode enable; the container-query stack (`containerStack`/`getContainerSize`, seeded with the frame by every loop and pushed by `Element.Container`); headless support (`startHeadless` and its handle: `sendKey`/`sendPaste`/`sendMouse`/`getOutput`/`getLines`/`getStaticOutput`/`getFocusedId`/`advanceTime`/`setTerminalBackground`/`resize`/`quit`); `getConstraints`/`getContainerSize`/`constraints`. Read its module header for the full render model. | ~2280 lines |
-| `lib/Hooks.re` | Hook storage (`StateHook`/`EffectHook`/`MemoHook`/`RefHook`) and per-component render contexts; slot hooks `useState`/`useEffect`/`useEffectAlways`/`useMemo`/`useRef` and registration hooks `useKeyDown`/`useInput`/`useMouse`/`useFocus`/`useFocusManager`/`useQuit`/`useStdout`/`useTerminalBackground` (the terminal's own background color, from the startup OSC 11 probe — `None` until it answers, and possibly forever); timers (`useInterval`/`useTimeout`, virtual-clock backed headlessly); the `instanceState` record that holds *all* per-application state (component contexts, path→ID registry, root context, effect commit queue, focus state, timers, static/raw output queues, component bounds, `terminalBg`) — Runtime installs a fresh one per start; effect scheduling with commit-phase dep writes; `dispatchKey` (Tab focus cycling) and `dispatchMouse` (innermost-wins, wheel-interest) dispatch. | ~1630 lines |
+| `lib/Element.re` | Element tree type (`Text`, `Styled`, `VStack`, `HStack`, `Sized`, `Component`, `Lazy`, `WithContext`, `Static`, `WrappedText`, `Viewport`, `Container`, `Overlay`, `Empty`); the `overlayAlign`/`overlayOptions` records behind a floating layer; the `color` type (16 named ANSI colors, `Rgb` into the 216-cube, `RgbFull` 24-bit truecolor emitted as `38;2`/`48;2`) and the ANSI escape/style utilities that emit it; string utils (`visibleLength`, `padToWidth`, `stripAnsi`, `repeatString`, `splitLines` — all cell-based via `TextWidth`); JSX-compatible `Text` (with `~wrap`)/`VStack`/`HStack`/`Sized`/`Container`/`Overlay`/`Fragment`/`TextArea` (the *pure* editor renderer — `renderSegment`/`renderLine`/`make` take `~cursorVisible`; the blinking `<TextArea>` apps use is `lib/TextArea.re`). Its **soft-wrap display mapping** — `wrapSegments`/`displayRows`/`cursorDisplayRow` turn logical lines into `(logicalRow, startCell, cellCount)` display rows, `make` paints the window that keeps the cursor visible, and `measure` reports that height so a container can size itself around a growing input — is display only: `handleKeyDown` and every cursor/selection column stay logical/`Static` component modules; the simple non-layout `render` function, which delegates `Component` nodes to Runtime through the `componentRenderer` ref. `Component(typeId, key, props, renderFn)` is a pure *description* of a call site — no mutable per-instance state, no output cache. | ~1800 lines |
+| `lib/Runtime.re` | Layout engine (flex distribution, align/justify, size resolution) and `renderElement` — one recursive renderer with a real mode (applies layout) and a **measuring mode** (`~measuring=true`, layout-free, used to find an `Auto` child's natural size, so stacks visit those children twice per frame), plus `~origin` threading for mouse bounds (the *committed* pass is `!measuring && origin != None`); component identity as a tree path (`childPath`/`componentPath` → the per-instance path→stableId registry); the commit phase (render, `Hooks.commitEffects`, unmount sweep, key-handler collection, `commitFocus`, static drain); detached rendering for `Element.render`; the interactive main loop (`start(~screen: screenMode=Inline, ...)`) — `Inline` rendering through `LiveRegion` (DSR cursor tracking, relative addressing) or `Fullscreen` rendering on the alternate screen through `FrameDiff.diff` (frame padded to `termHeight`, absolute addressing, `<Static>`/`useStdout` rejected), terminal setup, SIGWINCH, wake-pipe, `InputDecoder`-fed event dispatch, interest-driven mouse-mode enable; the container-query stack (`containerStack`/`getContainerSize`, seeded with the frame by every loop and pushed by `Element.Container` *and* by an `Overlay`); floating layers (`frameSize`, the `overlayFrame` queue + `recordOverlay`, and `compositeOverlays` — the splice that paints layers over the finished frame, publishes them to `Hooks`, and returns `base` physically unchanged when none is open); headless support (`startHeadless` and its handle: `sendKey`/`sendPaste`/`sendMouse`/`getOutput`/`getLines`/`getStaticOutput`/`getFocusedId`/`advanceTime`/`setTerminalBackground`/`resize`/`quit`); `getConstraints`/`getContainerSize`/`constraints`. Read its module header for the full render model. | ~2280 lines |
+| `lib/Hooks.re` | Hook storage (`StateHook`/`EffectHook`/`MemoHook`/`RefHook`) and per-component render contexts; slot hooks `useState`/`useEffect`/`useEffectAlways`/`useMemo`/`useRef` and registration hooks `useKeyDown`/`useInput`/`useMouse`/`useFocus`/`useFocusManager`/`useQuit`/`useStdout`/`useTerminalBackground` (the terminal's own background color, from the startup OSC 11 probe — `None` until it answers, and possibly forever); timers (`useInterval`/`useTimeout`, virtual-clock backed headlessly); the `instanceState` record that holds *all* per-application state (component contexts, path→ID registry, root context, effect commit queue, focus state, timers, static/raw output queues, component bounds, `terminalBg`) — Runtime installs a fresh one per start; effect scheduling with commit-phase dep writes; the `overlayLayer` stack (members/box/onDismiss, published by `compositeOverlays`, topmost first) that `collectKeyHandlers`, `commitFocus` and `dispatchMouse` all filter against; `dispatchKey` (Tab focus cycling, then `keyHandlers` then the captured `inputHandlers`) and `dispatchMouse` (innermost-wins, wheel-interest, member-only under a layer, outside-Down dismisses and is swallowed whole). | ~1630 lines |
 | `lib/Key.re` | `Key.t` ADT (incl. `Text` for multi-byte input and `Paste`) and the raw-byte escape-sequence parser (`parse`) that normalizes terminal input — arrows, Ctrl/Alt/Meta/Shift combinations, backtab, CSI-u/kitty sequences, Backspace/Delete/Tab/KillLine/KillWord. | ~380 lines |
 | `lib/TextWidth.re` | UTF-8 decoding and terminal display width: `decodeUtf8`, `charWidth` (wcwidth-style), ANSI-aware `stringWidth`, and the `cell` splitter `toCells`. All layout measurement is done in the columns this reports. | ~260 lines |
-| `lib/StyledText.re` | ANSI-aware wrapping/truncation of already-rendered styled text: `parse`/`bake` (styled string ↔ per-cell chunks), `wrapString` (behind `<Text wrap>`), truncate variants, `sliceLines` (behind `Viewport`). Its SGR parser knows the closed set Matcha emits, including `38;2`/`48;2` truecolor, so a clipped or wrapped row re-opens the exact same color. Pure. | ~560 lines |
+| `lib/StyledText.re` | ANSI-aware wrapping/truncation of already-rendered styled text: `parse`/`bake` (styled string ↔ per-cell chunks), `wrapString` (behind `<Text wrap>`), truncate variants, `sliceLines` (behind `Viewport`), and the splice pair `splitAtWidth`/`padChunksToWidth` (behind `compositeOverlays`: cut a row at a column keeping both halves — a double-width cell straddling the cut blanks both sides — and pad a short row out, which is what makes an overlay opaque). Its SGR parser knows the closed set Matcha emits, including `38;2`/`48;2` truecolor, so a clipped or wrapped row re-opens the exact same color. Pure. | ~560 lines |
 | `lib/InputDecoder.re` | Stateful byte-stream assembler between `Terminal.readBytes` and dispatch: reassembles raw reads into `KeyEvent`/`PasteEvent` (bracketed paste)/`MouseEvent`/`CursorReport`/`OscReport` (an OSC string reply, split into code + payload; `ESC ]` … BEL or ST) regardless of how bytes were split across reads (`feed`/`flush`; lone-ESC 25ms deadline). An unterminated OSC is discarded at flush, never replayed as keys. | ~400 lines |
 | `lib/LiveRegion.re` | Pure inline frame patcher with RELATIVE cursor addressing: `patch` turns the painted live region into the next frame, committing `<Static>`/`useStdout` lines above it; `erase` removes the region. What the interactive loop writes — no `ESC[2J`, sync guards around each paint. | ~270 lines |
 | `lib/Perf.re` | Performance tracing, off by default. Records nested spans (`span`/`frame`/`instant`, plus the closure-free `recordComponent` the renderer calls per component) and, on `flush` or at process exit, writes a Chrome Trace Event JSON plus a plain-text `.summary.txt` digest (span table with **self** time, slowest frames broken down by phase). Enabled by `MATCHA_TRACE=<path>` or `Perf.enable`. Two invariants: it NEVER writes to stdout/stderr (goldens stay valid with tracing on), and it reads `Unix.gettimeofday` directly, never the headless virtual clock. Its module-level state is a deliberate, documented exception to the "no module-level app state" gotcha — tracing is process-global tooling that outlives any one `instanceState`. | ~430 lines |
 | `lib/Mouse.re` | SGR (1006) mouse event types, `parseSgr`/`encodeSgr`, and rect helpers (`contains`/`intersect`) for the bounds registry. Pure. | ~210 lines |
 | `lib/ScrollView.re` | `<ScrollView>` — a focusable, wheel-scrollable window onto taller content, built on `Element.Viewport`; uncontrolled by default, controllable via `~offset`/`~onScroll`; `scrollbarMetrics` is the pure thumb geometry. Two content modes: children (rendered whole, then clipped — O(total content) per frame) or `~rows`, an array of pre-baked style-self-contained rows that ignores the child and touches only the visible window — O(viewport) per frame, for long pre-rendered content. | ~250 lines |
+| `lib/Modal.re` | `<Modal isOpen title width height align shadow onDismiss>` — a bordered dialog floating over the frame, built on `Element.Overlay`. `createElement` returns `Lazy(() => isOpen ? Overlay(component, opts) : Empty)`, **never a component wrapping an Overlay** (see the gotcha): that keeps its cost at zero layout rows in both states and puts its hooks INSIDE the layer, where they are members. The inner component reads its box from `useContainerSize()` (the overlay pushes it), draws the `BoxChars` border with an optional title, owns Esc through a captured `useInput`, and saves/restores `focus.focusedId` across its own mount/unmount. May depend on `Runtime`; nothing in `Runtime` may reference it. | ~230 lines |
 | `lib/TextArea.re` | `<TextArea>` as applications get it (`Matcha.TextArea`): `include Element.TextArea` for everything pure, plus a shadowing `createElement` that wraps the renderer in a real component owning the cursor blink (`useState` + `useInterval` at 530ms, feeding `~cursorVisible`). `~blink=false` opts out; the blink is disabled under `MATCHA_HEADLESS=1` stream mode. Adds `~key` support the element-level `createElement` never had. | ~105 lines |
 | `lib/Clickable.re` | `<Clickable onClick>` — click target sized to the box its parent allocated; innermost-under-pointer wins; wheel passes through unless `~onMouseDown` is given. | ~80 lines |
 | `lib/FrameDiff.re` | Pure line-diff between frames with ABSOLUTE addressing on a cleared screen. This is what paints **Fullscreen** (alternate-screen) mode; `Inline` mode paints via `LiveRegion` instead. | ~115 lines |
@@ -369,6 +371,58 @@ session outside `withSession`, and never wait on a child with a bare sleep.
     itself. Application code that did (two `TerminalContext` providers and
     `layout-demo`'s header) bypassed `MATCHA_WIDTH`/`MATCHA_HEIGHT` entirely
     and reported 80x24 under every headless run.
+- **`useKeyDown` always fires; `useInput` is captured by the topmost
+  overlay.** They are two separate handler lists on the render context, and
+  `collectKeyHandlers` filters them differently: every component's
+  `useKeyDown` handlers are collected unconditionally, while `useInput`
+  handlers are collected only from the topmost open layer's **members** (the
+  root context's own `useInput` is dropped entirely while a layer is open —
+  the root is base, not a member). With nothing open, both lists come from
+  everything, exactly as before overlays existed.
+  - **Bind Ctrl+C with `useKeyDown` or your app is unquittable under a
+    modal.** Raw mode disables ISIG, so Ctrl+C is an ordinary keypress that
+    only the application can act on. A `useInput` binding for it would be
+    suppressed the moment a dialog opened, and there would be no way out.
+    `test/modal_tests.re` and the `command-menu` PTY case both guard this;
+    an exit reported as `Signaled(2)` is that bug.
+  - `<ScrollView>` goes quiet under a modal for free — it is `useFocus` +
+    `useInput` and nothing else.
+  - **Recorded ordering change:** all `useKeyDown` handlers now run before
+    all `useInput` handlers, where the two used to interleave in tree order.
+    Harmless because there is no `stopPropagation`, and it moved no test.
+- **A layer's members are what is rendered INSIDE the `Overlay`.** Runtime's
+  `Overlay` case snapshots `renderedComponentIds` before rendering the child
+  and walks the newly-prepended prefix with `===` back to the saved cons
+  cell; that prefix is exactly the membership set. Two consequences:
+  - `<Modal>` is `Lazy(() => isOpen ? Overlay(component) : Empty)`, **never a
+    component that returns an `Overlay`**. A component wrapper would put the
+    modal's own hooks *outside* the layer, where its own modal would suppress
+    them (its Esc binding would stop working the moment it opened) — and it
+    would cost a layout row, because `isInvisibleToLayout` deliberately does
+    not look through `Component` while it does look through `Lazy`.
+  - The same reasoning applies to anything you write yourself: a component
+    that merely *returns* an `Overlay` still takes a blank row in every stack
+    that holds it. Put the node in the stack.
+- **Overlays are invisible to layout and composited after it.** An
+  `<Overlay>`/`<Modal>` in a stack consumes no row, no gap slot and no
+  justify share; `Runtime.compositeOverlays` splices the recorded layers over
+  the finished frame, right after the render walk and before the static drain
+  and the paint. Two invariants hold it together:
+  - **Nothing open returns `base` physically unchanged** — not re-parsed, not
+    re-baked. That is what keeps every existing golden valid, and why the
+    `composite` Perf span is *absent* from a frame with no modal.
+  - The box, its position, and its clip all resolve against `frameSize` (the
+    whole frame) and never against the enclosing slot or the enclosing clip:
+    a modal opened from inside a `<ScrollView>` floats over the window rather
+    than inheriting that scroller's visible rect. The overlay pushes its box
+    onto `containerStack` too, so `useContainerSize()` inside a dialog reports
+    the dialog.
+  - Cost, when one IS open: `compositeOverlays` parses and re-bakes the whole
+    frame, so it is O(frame). Measured at 100x30 on `examples/command-menu` it
+    is ~0.9 ms/frame — small in absolute terms (≈5% of a 60 fps budget) but a
+    visible share of that app's unusually cheap 3 ms frame. Baking only the
+    spliced rows is the obvious optimization and is *not* free: a row emitted
+    verbatim is only correct if no style was left open entering it.
 - **The README can lag reality; `lib/Matcha.rei` is the API source of
   truth.** It's short and odoc-commented — read it before trusting prose docs
   (including this file) about what's exported, and edit it (together with

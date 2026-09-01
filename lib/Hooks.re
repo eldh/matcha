@@ -137,6 +137,15 @@ type renderContext = {
   mutable hookIndex: int, /* Current hook slot */
   mutable hooks: array(hookValue), /* Stored hook values */
   mutable keyHandlers: list((Key.t, Key.modifiers) => unit), /* Active handlers */
+  /* Handlers registered by useInput during THIS render, most recent first.
+     Kept SEPARATE from keyHandlers because the two have different capture
+     rules once a floating layer is open (B2): useKeyDown always fires,
+     useInput only for the topmost layer's members. Before overlays existed
+     useInput was literally a conditional useKeyDown, and capture was
+     therefore not expressible at all. Like keyHandlers, this is cleared by
+     beginRender and collected into the root context by collectKeyHandlers -
+     which is where the filtering happens. */
+  mutable inputHandlers: list((Key.t, Key.modifiers) => unit),
   /* Mouse handlers registered by useMouse during THIS render, most recent
      first (like keyHandlers). Unlike keyHandlers they are never collected
      into the root context: dispatchMouse routes a click to ONE component by
@@ -214,6 +223,36 @@ let freshFocusState = (): focusState => {
   prevOwners: Hashtbl.create(16),
   focusedId: None,
   enabled: true,
+};
+
+/* ============================================================================
+ * Overlay layers (B2)
+ *
+ * One entry per floating layer the last frame painted, as
+ * [Runtime.compositeOverlays] published it. This is the whole of what input
+ * routing needs to know about overlays - Hooks never sees an Element, a
+ * clip rect or a rendered line.
+ *
+ * - olMembers: the components rendered INSIDE the layer's child. A layer
+ *   "owns" exactly these. Runtime captures the set during the render walk
+ *   (see its Overlay case) and builds this table once per frame, because
+ *   every consumer below is a membership TEST and a list scan per keystroke
+ *   would be quadratic in the size of the dialog.
+ * - olBox: where the layer was painted, in frame coordinates - what a mouse
+ *   Down is tested against to decide "inside or outside".
+ * - olOnDismiss: run when a Down lands outside olBox.
+ *
+ * NEVER COMPARE ONE OF THESE WITH == OR !=. Reason's ==/!= are OCaml's
+ * STRUCTURAL =/<>, this record holds a Hashtbl and a closure, and structural
+ * compare raises Invalid_argument("compare: functional value") the moment it
+ * reaches the closure. Pattern-match on the list instead (see topOverlayLayer
+ * below) - which is all any consumer here actually needs.
+ * ============================================================================ */
+
+type overlayLayer = {
+  olMembers: Hashtbl.t(Element.componentId, unit),
+  olBox: Mouse.rect,
+  olOnDismiss: option(unit => unit),
 };
 
 /* ============================================================================
@@ -314,6 +353,17 @@ type instanceState = {
    * slot: it is a property of the running application, read by any number of
    * components. */
   mutable terminalBg: option((int, int, int)),
+  /* ---- Overlay layers (B2) --------------------------------------------
+   * The floating layers of the last composited frame, TOPMOST FIRST (the
+   * queue Runtime builds is bottom-most first, i.e. paint order; this is
+   * the reverse, because every consumer here wants the topmost one).
+   *
+   * Published by Runtime.compositeOverlays, which runs straight after the
+   * render walk and therefore BEFORE collectKeyHandlers, commitFocus and
+   * any dispatch - so key capture, focus containment and mouse routing all
+   * see this frame's layers, never last frame's. [] when nothing is open,
+   * which is the fast path every existing application stays on. */
+  mutable overlayLayers: list(overlayLayer),
 };
 
 /* Create an empty instance state. */
@@ -336,6 +386,7 @@ let freshInstance = (): instanceState => {
   staticAllowed: true,
   componentBounds: Hashtbl.create(64),
   terminalBg: None,
+  overlayLayers: [],
 };
 
 /* The instance currently in force. Replaced by Runtime on every start. */
@@ -351,6 +402,33 @@ let generateComponentId = (): Element.componentId => {
   st.nextComponentId := id + 1;
   id;
 };
+
+/* Publish this frame's floating layers, TOPMOST FIRST. (internal)
+ *
+ * RUNTIME-ONLY: Runtime.compositeOverlays calls this exactly once per frame,
+ * with [] when nothing is open - which is what makes a modal stop owning the
+ * keyboard on the very frame it closes, rather than one frame later. */
+let setOverlayLayers = (st: instanceState, layers: list(overlayLayer)): unit =>
+  st.overlayLayers = layers;
+
+/* The topmost floating layer, or None when nothing is open. (internal)
+ *
+ * Only the TOP layer captures: stack two modals and the lower one goes as
+ * quiet as the base application, which is what "modal" means. */
+let topOverlayLayer = (st: instanceState): option(overlayLayer) =>
+  switch (st.overlayLayers) {
+  | [top, ..._] => Some(top)
+  | [] => None
+  };
+
+/* Is [id] a member of the topmost layer - i.e. was it rendered INSIDE the
+ * overlay's child? True for everything when no layer is open, which is the
+ * fast path every application without a modal stays on. (internal) */
+let isCapturedBy = (layer: option(overlayLayer), id: Element.componentId): bool =>
+  switch (layer) {
+  | None => true
+  | Some(l) => Hashtbl.mem(l.olMembers, id)
+  };
 
 /* Wake main loop function - set by Runtime to interrupt blocking I/O.
  * Deliberately NOT part of instanceState: it registers a process-level
@@ -841,6 +919,12 @@ type focusManager = {
   focusNext: unit => unit,
   focusPrevious: unit => unit,
   focus: string => unit,
+  /* Like [focus], but able to say "nothing" (B2). <Modal> restores whatever
+     held focus before it opened, and that may legitimately have been None -
+     an application where nothing was focused yet must come back to nothing
+     focused, not to the first entry of the ring. Same no-op-is-free gating
+     as [focus]: assigning the value it already has costs no frame. */
+  setFocused: option(string) => unit,
 };
 
 /* Map a focusable's owner to a Hashtbl-friendly key: -1 for the root (None -
@@ -968,21 +1052,39 @@ let useFocusManager = (): focusManager => {
        focusable, is allowed - the id simply is not visibly focused (no
        inverted marker) until a matching active useFocus shows up. */
     focus: id => setFocused(Some(id)),
+    setFocused,
   };
 };
 
-/* Register a key handler that only fires while ~isActive is true.
+/* Register a key handler that only fires while ~isActive is true, AND only
+ * while this component is not suppressed by a floating layer.
  *
  * `Hooks.useInput(~isActive=isFocused, handler)` is the idiom pairing this
- * with useFocus: only the currently-focused item's handler runs. Like
- * useKeyDown, this rides collectKeyHandlers unchanged - it is nothing more
- * than a conditional useKeyDown. ~isActive defaults to true, so a bare
- * `Hooks.useInput(handler)` behaves exactly like useKeyDown.
+ * with useFocus: only the currently-focused item's handler runs. ~isActive
+ * defaults to true.
+ *
+ * CAPTURE (B2) is the difference between this and useKeyDown, and it is the
+ * reason the two are separate lists:
+ *
+ * - useInput fires only for the members of the TOPMOST open overlay - the
+ *   components rendered inside it. With nothing open, everything is a
+ *   member and this behaves exactly as it always did. So a <ScrollView>
+ *   under a modal goes quiet for free (it is just useFocus + useInput), and
+ *   a dialog's Esc binding closes the top dialog rather than all of them.
+ * - useKeyDown ALWAYS fires. That is the deliberate escape hatch, and it is
+ *   what keeps an application QUITTABLE: raw mode disables ISIG, so Ctrl+C
+ *   is an ordinary keypress, and an app that cannot receive it while a modal
+ *   is open cannot be exited at all. Bind Ctrl+C (and any other global) with
+ *   useKeyDown, never with useInput.
+ *
+ * The filtering itself happens once per frame in collectKeyHandlers, not
+ * here: whether a layer is open is not known until the whole tree has
+ * rendered.
  */
 let useInput = (~isActive=true, handler: (Key.t, Key.modifiers) => unit): unit =>
   if (isActive) {
     let ctx = getContext();
-    ctx.keyHandlers = [handler, ...ctx.keyHandlers];
+    ctx.inputHandlers = [handler, ...ctx.inputHandlers];
   };
 
 /* Dispatch a key event.
@@ -1023,7 +1125,14 @@ let dispatchKey =
     focus.focusedId = cycleFocus(focus, ~dir);
     rootCtx.needsRerender = true;
   } else {
+    /* Both collected lists, useKeyDown's first (B2). Recorded ordering
+       change: every useKeyDown in the tree now runs before every useInput,
+       where previously the two interleaved in tree order. Harmless here -
+       there is no stopPropagation, so a handler cannot prevent a later one
+       from running, and no application in this repo depends on a useInput
+       running before a useKeyDown. */
     List.iter(handler => handler(key, mods), rootCtx.keyHandlers);
+    List.iter(handler => handler(key, mods), rootCtx.inputHandlers);
   };
 };
 
@@ -1285,6 +1394,7 @@ let createContext = (quit: quitBehavior => unit): renderContext => {
     hookIndex: 0,
     hooks: [||],
     keyHandlers: [],
+    inputHandlers: [],
     mouseHandlers: [],
     wheelInterest: false,
     pendingEffects: [],
@@ -1304,6 +1414,7 @@ let createComponentContext =
     hookIndex: 0,
     hooks: [||],
     keyHandlers: [],
+    inputHandlers: [],
     mouseHandlers: [],
     wheelInterest: false,
     pendingEffects: [],
@@ -1326,6 +1437,7 @@ let getComponentContext =
 let beginRender = (ctx: renderContext): unit => {
   ctx.hookIndex = 0;
   ctx.keyHandlers = [];
+  ctx.inputHandlers = [];
   ctx.mouseHandlers = [];
   ctx.wheelInterest = false;
   ctx.pendingEffects = [];
@@ -1337,14 +1449,29 @@ let beginRender = (ctx: renderContext): unit => {
  * (traversal) order. orderedComponentIds is the render-pass traversal
  * order; components visited more than once in a pass (e.g. HStack
  * measure + render passes) are deduplicated to their first occurrence.
+ *
+ * TWO LISTS, TWO RULES (B2). useKeyDown's handlers are collected from every
+ * component, unconditionally - that is the global escape hatch, and what
+ * keeps Ctrl+C working under a modal. useInput's are collected only from the
+ * topmost open layer's MEMBERS, and the root context's own useInput is
+ * dropped entirely while a layer is open (the root is base, not a member -
+ * see the Overlay case in lib/Runtime.re for what membership means). With no
+ * layer open both lists are collected from everything, which is exactly the
+ * behaviour that existed before overlays.
  */
 let collectKeyHandlers =
     (rootCtx: renderContext, orderedComponentIds: list(Element.componentId))
     : unit => {
+  let layer = topOverlayLayer(instance());
   /* Handlers are prepended at registration time - reverse to restore order */
   let rootHandlers = List.rev(rootCtx.keyHandlers);
+  let rootInput =
+    switch (layer) {
+    | None => List.rev(rootCtx.inputHandlers)
+    | Some(_) => []
+    };
   let seen: Hashtbl.t(Element.componentId, unit) = Hashtbl.create(16);
-  let componentHandlers =
+  let ordered =
     orderedComponentIds
     |> List.filter(id =>
          if (Hashtbl.mem(seen, id)) {
@@ -1353,14 +1480,26 @@ let collectKeyHandlers =
            Hashtbl.add(seen, id, ());
            true;
          }
-       )
+       );
+  let componentHandlers =
+    ordered
     |> List.concat_map(id =>
          switch (getComponentContext(id)) {
          | Some(componentCtx) => List.rev(componentCtx.keyHandlers)
          | None => []
          }
        );
+  let componentInput =
+    ordered
+    |> List.filter(id => isCapturedBy(layer, id))
+    |> List.concat_map(id =>
+         switch (getComponentContext(id)) {
+         | Some(componentCtx) => List.rev(componentCtx.inputHandlers)
+         | None => []
+         }
+       );
   rootCtx.keyHandlers = rootHandlers @ componentHandlers;
+  rootCtx.inputHandlers = rootInput @ componentInput;
 };
 
 /* ============================================================================
@@ -1423,6 +1562,28 @@ let hasMouseHandlers = (): bool => {
  */
 let dispatchMouse = (rootCtx: renderContext, ev: Mouse.event): unit => {
   let st = instance();
+  let layer = topOverlayLayer(st);
+  /* OUTSIDE CLICK DISMISS (B2). While a layer is open, a Down that lands
+     outside its box runs ovOnDismiss and is SWALLOWED WHOLE - including the
+     root fan-out, which is the one deliberate exception to "root handlers
+     always run". A click that dismisses a dialog must not also press the
+     button it happened to land on underneath. Only Down: a wheel notch or a
+     drag outside the dialog is not a dismissal gesture, so those fall
+     through to the normal routing below (where the member filter still
+     applies, so they simply find no target inside the layer). */
+  let dismissed =
+    switch (layer, ev.Mouse.kind) {
+    | (Some(l), Mouse.Down) when !Mouse.contains(l.olBox, ev.Mouse.x, ev.Mouse.y) =>
+      switch (l.olOnDismiss) {
+      | Some(f) => f()
+      | None => ()
+      };
+      true;
+    | _ => false
+    };
+  if (dismissed) {
+    ();
+  } else {
   /* A wheel event only targets a context that declared wheel interest
      (useMouse's ~wheel, true by default; <Clickable> without ~onMouseDown
      opts out) - anything else is transparent to it, so a notch over a
@@ -1440,7 +1601,10 @@ let dispatchMouse = (rootCtx: renderContext, ev: Mouse.event): unit => {
   let target: ref(option((renderContext, Mouse.rect))) = ref(None);
   List.iter(
     id =>
-      if (!Hashtbl.mem(seen, id)) {
+      /* While a layer is open, only its members are hit-testable (B2), so a
+         click inside the dialog can never reach the component that happens
+         to be painted at the same coordinates underneath it. */
+      if (!Hashtbl.mem(seen, id) && isCapturedBy(layer, id)) {
         Hashtbl.add(seen, id, ());
         switch (getComponentContext(id), Hashtbl.find_opt(st.componentBounds, id)) {
         | (Some(ctx), Some(rect)) =>
@@ -1465,6 +1629,7 @@ let dispatchMouse = (rootCtx: renderContext, ev: Mouse.event): unit => {
   | None => ()
   };
   List.iter(handler => handler(ev), List.rev(rootCtx.mouseHandlers));
+  };
 };
 
 /* Clear this frame's focus registrations, ready for a fresh render pass.
@@ -1510,11 +1675,35 @@ let commitFocus = (st: instanceState, rootCtx: renderContext): unit => {
   let prevOrder = focus.order;
   let prevFocusedId = focus.focusedId;
 
-  /* Step 1 */
+  /* Step 1 - membership filter first (B2), then the dedupe.
+   *
+   * While a layer is open, `order` holds ONLY that layer's focusables, and
+   * containment then falls out of machinery that already exists: cycleFocus
+   * walks `order`, dispatchKey's Tab guard reads `order`, and step 2's
+   * min(oldIdx, numActive - 1) clamp lands focus inside the dialog even
+   * without ~autoFocus. The root context's own useFocus (fOwner = None) is
+   * base, not a member, so it drops out too.
+   *
+   * What does NOT fall out is RESTORE: when the layer closes, `order` is the
+   * full ring again and step 2 would hand focus to whatever now sits at the
+   * old index, not to whatever had it before the dialog opened. That is
+   * <Modal>'s job - it records focusedId on mount and puts it back in its
+   * unmount cleanup, which runs strictly before this function. */
+  let layer = topOverlayLayer(st);
   let seenOwners: Hashtbl.t(int, unit) = Hashtbl.create(16);
   let deduped =
     focus.registrations
     |> List.rev
+    |> List.filter(f =>
+         switch (layer) {
+         | None => true
+         | Some(l) =>
+           switch (f.fOwner) {
+           | None => false
+           | Some(cid) => Hashtbl.mem(l.olMembers, cid)
+           }
+         }
+       )
     |> List.filter(f => {
          let key = focusOwnerKey(f.fOwner);
          if (Hashtbl.mem(seenOwners, key)) {
@@ -1706,6 +1895,7 @@ let unmountAll = (): unit => {
   | Some(rootCtx) =>
     runCleanups(rootCtx);
     rootCtx.keyHandlers = [];
+    rootCtx.inputHandlers = [];
     rootCtx.mouseHandlers = [];
     rootCtx.wheelInterest = false;
     rootCtx.pendingEffects = [];
@@ -1723,4 +1913,8 @@ let unmountAll = (): unit => {
      an unmounted tree that comes back must not re-emit (see staticEmitted). */
   st.pendingStatic := [];
   st.pendingRawOutput := [];
+  /* No frame is painted any more, so no layer owns input. Left set, this
+     would keep suppressing every useInput in an application that is being
+     torn down and restarted on the same instance. */
+  st.overlayLayers = [];
 };
