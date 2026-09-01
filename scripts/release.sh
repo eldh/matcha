@@ -141,7 +141,10 @@ step "Building from a pristine export"
 # state, with the same command opam will run. This is what catches a file
 # that exists on disk but was never committed.
 export_dir="$(mktemp -d)"
-trap 'rm -rf "$export_dir"' EXIT
+# INT/TERM/HUP/PIPE as well as EXIT: piping this script into `head` closes
+# the pipe early, and a SIGPIPE death would otherwise leave the export - a
+# few tens of megabytes - behind.
+trap 'rm -rf "$export_dir"' EXIT INT TERM HUP PIPE
 git archive --format=tar HEAD | tar -x -C "$export_dir"
 info "exported $(git rev-parse --short HEAD) to a temporary directory"
 (cd "$export_dir" && dune build -p matcha @install) ||

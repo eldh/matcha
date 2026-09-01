@@ -110,7 +110,7 @@ info "sha512 $sha512"
 step "Building the opam file"
 
 opam_file="$(mktemp)"
-trap 'rm -f "$opam_file"' EXIT
+trap 'rm -f "$opam_file"' EXIT INT TERM HUP PIPE
 {
   cat matcha.opam
   cat <<EOF
