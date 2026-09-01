@@ -159,8 +159,8 @@ session outside `withSession`, and never wait on a child with a bare sleep.
 
 | Module | Responsibility | Approx. size |
 |---|---|---|
-| `lib/Element.re` | Element tree type (`Text`, `Styled`, `VStack`, `HStack`, `Sized`, `Component`, `Lazy`, `WithContext`, `Static`, `WrappedText`, `Viewport`, `Empty`); the `color` type (16 named ANSI colors, `Rgb` into the 216-cube, `RgbFull` 24-bit truecolor emitted as `38;2`/`48;2`) and the ANSI escape/style utilities that emit it; string utils (`visibleLength`, `padToWidth`, `stripAnsi`, `repeatString`, `splitLines` — all cell-based via `TextWidth`); JSX-compatible `Text` (with `~wrap`)/`VStack`/`HStack`/`Sized`/`Fragment`/`TextArea` (the *pure* editor renderer — `renderSegment`/`renderLine`/`make` take `~cursorVisible`; the blinking `<TextArea>` apps use is `lib/TextArea.re`). Its **soft-wrap display mapping** — `wrapSegments`/`displayRows`/`cursorDisplayRow` turn logical lines into `(logicalRow, startCell, cellCount)` display rows, `make` paints the window that keeps the cursor visible, and `measure` reports that height so a container can size itself around a growing input — is display only: `handleKeyDown` and every cursor/selection column stay logical/`Static` component modules; the simple non-layout `render` function, which delegates `Component` nodes to Runtime through the `componentRenderer` ref. `Component(typeId, key, props, renderFn)` is a pure *description* of a call site — no mutable per-instance state, no output cache. | ~1800 lines |
-| `lib/Runtime.re` | Layout engine (flex distribution, align/justify, size resolution) and `renderElement` — one recursive renderer with a real mode (applies layout) and a **measuring mode** (`~measuring=true`, layout-free, used to find an `Auto` child's natural size, so stacks visit those children twice per frame), plus `~origin` threading for mouse bounds (the *committed* pass is `!measuring && origin != None`); component identity as a tree path (`childPath`/`componentPath` → the per-instance path→stableId registry); the commit phase (render, `Hooks.commitEffects`, unmount sweep, key-handler collection, `commitFocus`, static drain); detached rendering for `Element.render`; the interactive main loop (`start(~screen: screenMode=Inline, ...)`) — `Inline` rendering through `LiveRegion` (DSR cursor tracking, relative addressing) or `Fullscreen` rendering on the alternate screen through `FrameDiff.diff` (frame padded to `termHeight`, absolute addressing, `<Static>`/`useStdout` rejected), terminal setup, SIGWINCH, wake-pipe, `InputDecoder`-fed event dispatch, interest-driven mouse-mode enable; headless support (`startHeadless` and its handle: `sendKey`/`sendPaste`/`sendMouse`/`getOutput`/`getLines`/`getStaticOutput`/`getFocusedId`/`advanceTime`/`setTerminalBackground`/`resize`/`quit`); `useLayout`/`constraints`. Read its module header for the full render model. | ~2280 lines |
+| `lib/Element.re` | Element tree type (`Text`, `Styled`, `VStack`, `HStack`, `Sized`, `Component`, `Lazy`, `WithContext`, `Static`, `WrappedText`, `Viewport`, `Container`, `Empty`); the `color` type (16 named ANSI colors, `Rgb` into the 216-cube, `RgbFull` 24-bit truecolor emitted as `38;2`/`48;2`) and the ANSI escape/style utilities that emit it; string utils (`visibleLength`, `padToWidth`, `stripAnsi`, `repeatString`, `splitLines` — all cell-based via `TextWidth`); JSX-compatible `Text` (with `~wrap`)/`VStack`/`HStack`/`Sized`/`Container`/`Fragment`/`TextArea` (the *pure* editor renderer — `renderSegment`/`renderLine`/`make` take `~cursorVisible`; the blinking `<TextArea>` apps use is `lib/TextArea.re`). Its **soft-wrap display mapping** — `wrapSegments`/`displayRows`/`cursorDisplayRow` turn logical lines into `(logicalRow, startCell, cellCount)` display rows, `make` paints the window that keeps the cursor visible, and `measure` reports that height so a container can size itself around a growing input — is display only: `handleKeyDown` and every cursor/selection column stay logical/`Static` component modules; the simple non-layout `render` function, which delegates `Component` nodes to Runtime through the `componentRenderer` ref. `Component(typeId, key, props, renderFn)` is a pure *description* of a call site — no mutable per-instance state, no output cache. | ~1800 lines |
+| `lib/Runtime.re` | Layout engine (flex distribution, align/justify, size resolution) and `renderElement` — one recursive renderer with a real mode (applies layout) and a **measuring mode** (`~measuring=true`, layout-free, used to find an `Auto` child's natural size, so stacks visit those children twice per frame), plus `~origin` threading for mouse bounds (the *committed* pass is `!measuring && origin != None`); component identity as a tree path (`childPath`/`componentPath` → the per-instance path→stableId registry); the commit phase (render, `Hooks.commitEffects`, unmount sweep, key-handler collection, `commitFocus`, static drain); detached rendering for `Element.render`; the interactive main loop (`start(~screen: screenMode=Inline, ...)`) — `Inline` rendering through `LiveRegion` (DSR cursor tracking, relative addressing) or `Fullscreen` rendering on the alternate screen through `FrameDiff.diff` (frame padded to `termHeight`, absolute addressing, `<Static>`/`useStdout` rejected), terminal setup, SIGWINCH, wake-pipe, `InputDecoder`-fed event dispatch, interest-driven mouse-mode enable; the container-query stack (`containerStack`/`getContainerSize`, seeded with the frame by every loop and pushed by `Element.Container`); headless support (`startHeadless` and its handle: `sendKey`/`sendPaste`/`sendMouse`/`getOutput`/`getLines`/`getStaticOutput`/`getFocusedId`/`advanceTime`/`setTerminalBackground`/`resize`/`quit`); `getConstraints`/`getContainerSize`/`constraints`. Read its module header for the full render model. | ~2280 lines |
 | `lib/Hooks.re` | Hook storage (`StateHook`/`EffectHook`/`MemoHook`/`RefHook`) and per-component render contexts; slot hooks `useState`/`useEffect`/`useEffectAlways`/`useMemo`/`useRef` and registration hooks `useKeyDown`/`useInput`/`useMouse`/`useFocus`/`useFocusManager`/`useQuit`/`useStdout`/`useTerminalBackground` (the terminal's own background color, from the startup OSC 11 probe — `None` until it answers, and possibly forever); timers (`useInterval`/`useTimeout`, virtual-clock backed headlessly); the `instanceState` record that holds *all* per-application state (component contexts, path→ID registry, root context, effect commit queue, focus state, timers, static/raw output queues, component bounds, `terminalBg`) — Runtime installs a fresh one per start; effect scheduling with commit-phase dep writes; `dispatchKey` (Tab focus cycling) and `dispatchMouse` (innermost-wins, wheel-interest) dispatch. | ~1630 lines |
 | `lib/Key.re` | `Key.t` ADT (incl. `Text` for multi-byte input and `Paste`) and the raw-byte escape-sequence parser (`parse`) that normalizes terminal input — arrows, Ctrl/Alt/Meta/Shift combinations, backtab, CSI-u/kitty sequences, Backspace/Delete/Tab/KillLine/KillWord. | ~380 lines |
 | `lib/TextWidth.re` | UTF-8 decoding and terminal display width: `decodeUtf8`, `charWidth` (wcwidth-style), ANSI-aware `stringWidth`, and the `cell` splitter `toCells`. All layout measurement is done in the columns this reports. | ~260 lines |
@@ -175,7 +175,7 @@ session outside `withSession`, and never wait on a child with a bare sleep.
 | `lib/FrameDiff.re` | Pure line-diff between frames with ABSOLUTE addressing on a cleared screen. This is what paints **Fullscreen** (alternate-screen) mode; `Inline` mode paints via `LiveRegion` instead. | ~115 lines |
 | `lib/Terminal.re` | The only module doing real terminal I/O: raw mode (via a C stub, `terminal_stubs`), cursor show/hide, screen clear, terminal size, raw byte reads, bracketed-paste/kitty/mouse mode toggles, `queryBackground` (the OSC 11 theme probe). `restoreTerminal` owns the exit sequence and its ordering matters: `ESC[<u`, `ESC[?1049l`, `ESC[<u` (kitty stacks are per screen buffer — see the gotcha below), then `?2004l`, `?1002;1006l`, show cursor. | ~215 lines |
 | `lib/Context.re` | React-style context: `create`/`provide`/`use`, plus the `Context.Make` functor for typed provider/consumer modules. | ~120 lines |
-| `lib/Matcha.re` + `lib/Matcha.rei` | Public API surface — re-exports the modules above plus convenience aliases (`flex`/`percent`/`chars`, color constructors, `useLayout`, `useStdout`, headless helpers). The `.rei` **pins** that surface: adding a `let` to `Matcha.re` alone does not export it, and removing one is a build error. Read these first when answering "does Matcha support X". | ~120 + ~285 lines |
+| `lib/Matcha.re` + `lib/Matcha.rei` | Public API surface — re-exports the modules above plus convenience aliases (`flex`/`percent`/`chars`, color constructors, `useContainerSize`, `useStdout`, headless helpers). The `.rei` **pins** that surface: adding a `let` to `Matcha.re` alone does not export it, and removing one is a build error. Read these first when answering "does Matcha support X". | ~120 + ~285 lines |
 | `lib/Component.re`, `lib/Event.re` | Thin convenience re-exports of a subset of `Hooks` (`Component.useState`; `Event.useQuit`/`useKeyDown`/`useFocus`/`useFocusManager`/`useInput`/`useMouse`) used throughout the examples. | ~16/~28 lines |
 | `ppx/ppx_component.ml` | The `[@component]` PPX: rewrites JSX (`Module.createElement(~prop=v, ~children=[...], ())`) and expands `[@component] let make = (~a, ~b) => {...}` into a generated `props` record type, `make: props => Element.t`, and a labeled `createElement` that wraps the render in `Element.createComponent`. | ~430 lines |
 
@@ -332,14 +332,43 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   value from a defaulted one. `Runtime`'s constraints default to 80x24,
   `getHeadlessConfigFromEnv` defaults to 80x24, and
   `caml_get_terminal_size`'s non-TTY fallback is 80x24 — so a stale-state
-  bug that leaves the root's `useLayout()` reading the *default* constraints
-  instead of the current frame's is completely invisible to an 80x24 test.
-  That is exactly how the root-`useLayout` stale-constraints bug survived:
+  bug that leaves the root's `useContainerSize()` reading the *default*
+  constraints instead of the current frame's is completely invisible to an
+  80x24 test. That is exactly how the root stale-constraints bug survived:
   the buggy fallback and the test default were the same numbers. Any test
   that touches sizing, wrapping, flex distribution, truncation or resize
   must run at least one **non-default** size (the PTY resize case uses
   100x30, the golden components use 40x16/40x10/40x8). A size assertion that
   reads "80" is not evidence unless something in the test made it 80.
+- **Responsive queries are container-relative, and boundaries are
+  explicit.** `useContainerSize()` (the *only* size hook — `useLayout` is
+  gone) answers with the nearest enclosing `<Container>`'s box, or with the
+  whole frame when there is none. So a root-level component reads the
+  terminal, and a component inside a wrapped pane reads the pane.
+  - `<Sized>` and `<ScrollView>` are **not** boundaries. Wrapping something
+    to nudge its layout must never silently re-target its descendants'
+    responsive queries — declare a `<Container>` where you want one. That is
+    why `examples/layout-demo` and `examples/layout-alignment` now wrap their
+    self-sizing children explicitly: those components want their *own* slot,
+    which is a container they have to declare.
+  - `Percent(n)` is untouched: it stays parent-relative, like CSS `%`.
+    Containers affect **queries only**, never layout.
+  - `Element.Container(child)` is layout-transparent by contract — same
+    constraints, same origin, same tree path, so adding or removing one can
+    move no cell and reset no hook. `getSizeHint`, `unwrapSized` and
+    `isInvisibleToLayout` all see through it for that reason (`unwrapSized`
+    unwraps *inside* it and keeps the node — dropping it would drop the
+    boundary). `test/container_tests.re` pins the transparency with a
+    byte-identical with/without frame comparison; if you change the
+    `Container` case, that test is the gate.
+  - The stack is pushed in **measuring mode too**. A stack measures an `Auto`
+    child and then renders it for real; a component whose output depends on
+    its container must answer the same in both passes or its measured size
+    will not match what it paints.
+  - Nothing in the tree calls `Terminal.getSize()` any more except `Runtime`
+    itself. Application code that did (two `TerminalContext` providers and
+    `layout-demo`'s header) bypassed `MATCHA_WIDTH`/`MATCHA_HEIGHT` entirely
+    and reported 80x24 under every headless run.
 - **The README can lag reality; `lib/Matcha.rei` is the API source of
   truth.** It's short and odoc-commented — read it before trusting prose docs
   (including this file) about what's exported, and edit it (together with

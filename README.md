@@ -38,7 +38,7 @@ let () = Runtime.start((module App));
   components with props, backed by a PPX that rewrites JSX and generates
   boilerplate.
 - **Hooks** — `useState`, `useEffect`, `useEffectAlways`, `useMemo`, `useRef`,
-  `useKeyDown`, `useQuit`, `useLayout`, `useInterval`, `useTimeout`,
+  `useKeyDown`, `useQuit`, `useContainerSize`, `useInterval`, `useTimeout`,
   `useFocus`, `useInput`, `useMouse`, `useStdout` — familiar to anyone who has
   used React or Ink.
 - **Context API** — pass data through the tree without prop drilling, with a
@@ -164,6 +164,7 @@ dune exec matcha-example-counter
 | `<VStack>` | Stacks children vertically (flex column). |
 | `<HStack>` | Stacks children horizontally (flex row). |
 | `<Sized>` | Wraps a single child to give it an explicit size within a parent Stack. |
+| `<Container>` | Declares a container-query boundary: `useContainerSize()` inside it reports *this* box. Layout-transparent. |
 | `<TextArea>` | Multi-line, controlled text editor with cursor/selection state. |
 | `<Static>` | Append-only output committed above the live region, into scrollback. |
 | `<ScrollView>` | Scrolling window onto content taller than its box; `~rows` virtualizes very long pre-rendered content. |
@@ -392,7 +393,7 @@ the focus/input/mouse hooks) that the examples use.
 | `useMouse` | `(~wheel: bool=?, Mouse.event => unit) => unit` | Receives mouse events whose coordinates fall in this component's painted box, rebased to it; innermost component wins, no bubbling. `~wheel=false` makes it transparent to scroll events. |
 | `useStdout` | `unit => {write: string => unit}` | Commits plain text above the live region (Ink's `useStdout`); callable from anywhere, including background threads. |
 | `useQuit` | `unit => (quitBehavior => unit)` | `Event.useQuit` or `Hooks.useQuit`; call the returned function with `ClearScreen` (erases the live region, keeps the static transcript) or `PreserveScreen`. |
-| `useLayout` | `unit => constraints` | `Matcha.useLayout`; returns `{availWidth: int, availHeight: int}`, the space the parent Stack allocated to this component. |
+| `useContainerSize` | `unit => constraints` | `Matcha.useContainerSize`; returns `{availWidth: int, availHeight: int}`, the box of the nearest enclosing `<Container>` — or the whole frame when there is none. See [Container queries](#container-queries). |
 | `useTerminalBackground` | `unit => option((int, int, int))` | The terminal's own background color, 0..255 per channel, once it has answered Matcha's startup OSC 11 query. `None` until then — and possibly forever. |
 
 ```
@@ -409,8 +410,47 @@ Hooks.useEffect(() => {
 ```
 
 ```
-let {Runtime.availWidth, availHeight} = useLayout();
+let {Runtime.availWidth, availHeight} = useContainerSize();
 ```
+
+#### Container queries
+
+Responsive decisions in Matcha are **container-relative by default**, the way
+CSS container queries work. `useContainerSize()` answers with the box of the
+nearest enclosing `<Container>`, and with the whole frame when there is no
+container above the caller — so a root-level component reads the terminal
+size, and a component inside a pane reads the pane.
+
+```
+<HStack>
+  <Sized size={Percent(40)}>
+    <Container> <Sidebar /> </Container>   /* Sidebar queries the 40% pane */
+  </Sized>
+  <Sized size={Flex(1)}>
+    <Container> <Detail /> </Container>    /* Detail queries the rest */
+  </Sized>
+</HStack>
+```
+
+```
+/* Inside Sidebar: 40% of a 200-column terminal is wide, 40% of an 80-column
+   one is not - and this component never has to know which it is in. */
+let {Runtime.availWidth: width, _} = useContainerSize();
+let layout = width >= 40 ? `Full : `Compact;
+```
+
+Three rules keep it predictable:
+
+- **`<Container>` is layout-transparent.** It renders its child with the
+  constraints it received, at the same tree path — adding or removing one
+  never moves a cell and never resets a hook. Its *only* effect is on
+  queries.
+- **Boundaries are explicit.** `<Sized>` and `<ScrollView>` are **not**
+  containers. Wrapping something to nudge its layout must not silently
+  re-target its descendants' responsive queries, so declare a `<Container>`
+  where you want one.
+- **`Percent(n)` is unaffected.** It stays parent-relative, like CSS `%`.
+  Containers change *queries*, not layout.
 
 #### Theme detection
 
@@ -654,8 +694,8 @@ the headless invocation shown above.
 |---|---|---|
 | `hello-world` | `matcha-example-hello-world` | Minimal app, `useQuit`, `useKeyDown`. |
 | `counter` | `matcha-example-counter` | `useState`, `useMemo`, key handling. |
-| `layout-demo` | `matcha-example-layout-demo` | `Sized`, `Flex`/`Percent`/`Chars`, `useLayout`. |
-| `layout-alignment` | `matcha-example-layout-alignment` | `align` / `justify` on `HStack`/`VStack`. |
+| `layout-demo` | `matcha-example-layout-demo` | `Sized`, `Flex`/`Percent`/`Chars`, `<Container>` + `useContainerSize`. |
+| `layout-alignment` | `matcha-example-layout-alignment` | `align` / `justify` on `HStack`/`VStack`, container-relative self-sizing. |
 | `nested-components` | `matcha-example-nested-components` | Composing components, `Context.Make`. |
 | `keyed-switch` | `matcha-example-keyed-switch` | Component identity via the `key` prop. |
 | `optional-params` | `matcha-example-optional-params` | Optional component props (`~second: string=?`). |

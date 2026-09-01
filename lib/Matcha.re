@@ -36,6 +36,7 @@ module Text = Element.Text; /* Text with optional styling props */
 module VStack = Element.VStack; /* Vertical flex stack */
 module HStack = Element.HStack; /* Horizontal flex stack */
 module Sized = Element.Sized; /* Size wrapper for stack children */
+module Container = Element.Container; /* Container-query boundary */
 module Static = Element.Static; /* Append-only output above the live region */
 module Clickable = Clickable; /* Wrap an element to make it click-target-able */
 module ScrollView = ScrollView; /* Scrolling window onto oversized content */
@@ -52,10 +53,18 @@ let chars = (n: int) => Element.Chars(n);
 /* Layout constraints type and accessor */
 type constraints = Runtime.constraints;
 
-/* Get the current layout constraints (width/height available to this component).
- * Call this within a component to get the space allocated by the parent Stack.
+/* The nearest enclosing <Container>'s box, or the whole frame when there is
+ * none above this component.
+ *
+ * THE default for any responsive decision: a component sizes itself against
+ * the region it was placed in, not against the window and not against
+ * whatever slot its immediate parent happened to give it. Wrap a pane in
+ * <Container> and everything inside it becomes responsive to that pane.
+ *
+ * <Sized> and <ScrollView> are NOT boundaries - only <Container> is - and
+ * Percent(n) is unaffected: it stays parent-relative, like CSS %.
  */
-let useLayout = Runtime.getConstraints;
+let useContainerSize = Runtime.getContainerSize;
 
 /* Write plain text above the live region (Ink's useStdout). See
  * Hooks.useStdout; prefer <Static> for lists of rendered items. */

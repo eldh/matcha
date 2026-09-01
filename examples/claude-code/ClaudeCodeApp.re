@@ -236,7 +236,7 @@ module CommandRow = {
 [@component]
 let make = () => {
   let quit = Event.useQuit();
-  let {Runtime.availWidth: width, _} = useLayout();
+  let {Runtime.availWidth: width, _} = useContainerSize();
 
   /* The transcript - append only, and entirely ours: it is state that the
      history ScrollView below renders as ordinary content. The banner is the

@@ -1,10 +1,17 @@
 open Matcha;
 
-/* A bordered section that fills its allocated space */
+/* A bordered section that fills its container.
+ *
+ * Every <Section> below sits inside a <Container> of its own, so
+ * useContainerSize() reports the pane the <Sized> wrapper allocated. Without
+ * that wrapper it would report the whole frame - responsive queries are
+ * container-relative by default, and <Sized> is deliberately NOT a boundary
+ * (nudging layout must not silently re-target the descendants' queries). */
 module Section = {
   [@component]
   let make = (~label: string, ~color: Element.color) => {
-    let { Runtime.availWidth: width, availHeight: height } = useLayout();
+    let { Runtime.availWidth: width, availHeight: height } =
+      useContainerSize();
 
     /* Build box that fills available space */
     let innerWidth = max(0, width - 2); /* Account for side borders */
@@ -67,7 +74,12 @@ module Section = {
 [@component]
 let make = () => {
   let quit = Event.useQuit();
-  let (termWidth, termHeight) = Terminal.getSize();
+  /* This is the ROOT component and nothing wraps it in a <Container>, so the
+     query answers with the whole frame - which is exactly the "terminal
+     size" the header reports. It also honours MATCHA_WIDTH/MATCHA_HEIGHT,
+     which the raw Terminal.getSize() this replaced did not. */
+  let {Runtime.availWidth: termWidth, availHeight: termHeight} =
+    useContainerSize();
 
   Event.useKeyDown((key, _modifiers) => {
     switch (key) {
@@ -79,28 +91,36 @@ let make = () => {
 
   <VStack>
     <Sized size={Chars(5)}>
-      <Section
-        label={
-          "Layout Demo - Terminal: "
-          ++ string_of_int(termWidth)
-          ++ "x"
-          ++ string_of_int(termHeight)
-          ++ " - Press Q to quit"
-        }
-        color=Element.Cyan
-      />
+      <Container>
+        <Section
+          label={
+            "Layout Demo - Terminal: "
+            ++ string_of_int(termWidth)
+            ++ "x"
+            ++ string_of_int(termHeight)
+            ++ " - Press Q to quit"
+          }
+          color=Element.Cyan
+        />
+      </Container>
     </Sized>
     /* 30% of parent height */
     <Sized size={Percent(30)}>
-      <Section label="Percent(30) - 30% of parent" color=Element.Magenta />
+      <Container>
+        <Section label="Percent(30) - 30% of parent" color=Element.Magenta />
+      </Container>
     </Sized>
     /* 2x flex (takes 2/3 of remaining) */
     <Sized size={Flex(2)}>
-      <Section label="Flex(2) - 2x flex share" color=Element.Green />
+      <Container>
+        <Section label="Flex(2) - 2x flex share" color=Element.Green />
+      </Container>
     </Sized>
     /* 1x flex (takes 1/3 of remaining) */
     <Sized size={Flex(1)}>
-      <Section label="Flex(1) - 1x flex share" color=Element.Yellow />
+      <Container>
+        <Section label="Flex(1) - 1x flex share" color=Element.Yellow />
+      </Container>
     </Sized>
   </VStack>;
   /* Fixed 5 rows - header */

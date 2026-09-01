@@ -147,6 +147,19 @@ module HStack: (module type of Element.HStack);
 
 module Sized: (module type of Element.Sized);
 
+/** Container-query boundary: [<Container>...</Container>]. Every
+    [useContainerSize()] inside the subtree reports THIS element's box
+    instead of the whole frame, so a pane's contents can be responsive to
+    the pane.
+
+    Layout-transparent: it renders its child with the constraints it
+    received, at the same tree path, so adding or removing one never moves a
+    cell and never resets a hook. [<Sized>] and [<ScrollView>] are
+    deliberately not boundaries, and [Percent(n)] stays parent-relative -
+    containers affect queries only. */
+
+module Container: (module type of Element.Container);
+
 /** Append-only output committed above the live region and left in the
     terminal's scrollback: [<Static items renderItem={(item, i) => ...} />].
     Occupies no layout space; every item is rendered exactly once. */
@@ -215,11 +228,18 @@ let chars: int => Element.size;
 
 type constraints = Runtime.constraints;
 
-/** Get the current layout constraints (width/height available to this
-    component). Call it inside a component body to see what the parent stack
-    allocated. */
+/** The nearest enclosing [<Container>]'s box, or the whole frame when there
+    is no container above this component.
 
-let useLayout: unit => Runtime.constraints;
+    This is THE hook for a responsive decision: a component sizes itself
+    against the region it was placed in, not against the window. Wrap a pane
+    in [<Container>] and everything inside it queries that pane.
+
+    [<Sized>] and [<ScrollView>] are not boundaries - only [<Container>] is -
+    and [Percent(n)] is unaffected by containers: it stays parent-relative,
+    like CSS [%]. */
+
+let useContainerSize: unit => Runtime.constraints;
 
 /* ============================================================================
  * Output above the live region

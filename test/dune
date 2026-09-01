@@ -24,6 +24,7 @@
   textwidth_tests
   styledtext_tests
   layout_tests
+  container_tests
   textarea_tests
   context_tests
   repro_tests

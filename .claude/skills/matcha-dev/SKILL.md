@@ -67,6 +67,31 @@ export the module from `lib/Matcha.re` **and `lib/Matcha.rei`** only if it
 belongs in the public library (most one-off app components, like the
 examples' `Box` or `Section`, stay local to the app).
 
+### Making a component responsive
+
+Ask for the region, not the window: `useContainerSize()` returns the box of
+the nearest enclosing `<Container>`, and the whole frame when there is none.
+There is no `useLayout` — it was removed, because "the slot my immediate
+parent gave me" is almost never the thing a responsive decision should
+depend on.
+
+Consequences worth knowing before you write the component:
+
+- If it must react to **its own** allocated box (a bordered pane that draws
+  itself to fill the slot, a box that stretches under `AlignStretch`), the
+  caller has to wrap it: `<Sized size={Flex(1)}><Container><Pane
+  /></Container></Sized>`. `examples/layout-demo` and
+  `examples/layout-alignment` are the two worked examples in the repo.
+- `<Sized>` and `<ScrollView>` are deliberately **not** boundaries, and
+  `Percent(n)` stays parent-relative. Containers change queries only.
+- `Element.Container` must stay layout-transparent. If you touch its case in
+  `Runtime.renderElement`, `test/container_tests.re`'s with/without
+  byte-identical comparison is the gate — plus the whole golden suite, since
+  the migrated examples wrap real content.
+- Test it at a **non-80x24** size and, where the point is that the container
+  and the frame disagree, at a size where they visibly do (a `Chars(30)`
+  pane in a 100-column frame).
+
 Any change under 1–3 above changes rendering, so expect `dune runtest` to
 report **golden** mismatches (`test/golden_tests.re` vs `test/goldens/*.txt`).
 Read the diff before you regenerate — an unintended golden change is a bug.

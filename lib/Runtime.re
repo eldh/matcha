@@ -262,6 +262,36 @@ let currentConstraints: ref(constraints) = ref(defaultConstraints);
 let getConstraints = (): constraints => currentConstraints^;
 
 /* ============================================================================
+ * Container queries (A1)
+ * ============================================================================ */
+
+/* The enclosing <Container> boxes, innermost first.
+ *
+ * Every render loop seeds this with ONE entry - the whole frame - so a query
+ * made outside any container answers "the window", which is what a root-level
+ * component means by "how much room do I have". An Element.Container case
+ * pushes its own constraints while it renders its subtree and pops them
+ * afterwards, in BOTH modes, so a measure-time query matches the real one.
+ *
+ * Transient within a frame (like currentConstraints and clipStack), so a
+ * module-level ref is enough. */
+let containerStack: ref(list(constraints)) = ref([]);
+
+/* Start a frame's container stack: one entry covering the whole frame. */
+let resetContainerStack = (constraints: constraints): unit =>
+  containerStack := [constraints];
+
+/* The nearest enclosing container's box, or the whole frame when there is no
+ * <Container> above this point. An empty stack means nothing reset it (only
+ * possible outside a render loop, e.g. a detached Element.render), in which
+ * case the last constraints installed are the best answer available. */
+let getContainerSize = (): constraints =>
+  switch (containerStack^) {
+  | [top, ..._] => top
+  | [] => currentConstraints^
+  };
+
+/* ============================================================================
  * Clip stack (B4)
  * ============================================================================ */
 
@@ -387,15 +417,24 @@ let rec getSizeHint = (el: Element.t): option(Element.size) => {
   switch (el) {
   | Element.Sized(_, size) => Some(size)
   | Element.Lazy(f) => getSizeHint(f())
+  /* A <Container> is layout-transparent (A1): a size hint wrapped in one is
+   * still this child's size hint, or wrapping something would change the
+   * frame. */
+  | Element.Container(child) => getSizeHint(child)
   | _ => None
   };
 };
 
-/* Unwrap Sized wrapper to get inner element */
+/* Unwrap Sized wrapper to get inner element.
+ *
+ * Container is deliberately KEPT (its child is unwrapped in place): the
+ * wrapper carries no layout meaning, but dropping it here would drop the
+ * query boundary it exists to declare. */
 let rec unwrapSized = (el: Element.t): Element.t => {
   switch (el) {
   | Element.Sized(child, _) => unwrapSized(child)
   | Element.Lazy(f) => unwrapSized(f())
+  | Element.Container(child) => Element.Container(unwrapSized(child))
   | _ => el
   };
 };
@@ -427,6 +466,9 @@ let rec isInvisibleToLayout = (el: Element.t): bool => {
   | Element.Empty => true
   | Element.Sized(child, _) => isInvisibleToLayout(child)
   | Element.Lazy(f) => isInvisibleToLayout(f())
+  /* Layout-transparent (A1): wrapping a <Static> or an Empty in a
+   * <Container> must not give it a layout slot it did not have. */
+  | Element.Container(child) => isInvisibleToLayout(child)
   | _ => false
   };
 };
@@ -1351,6 +1393,28 @@ let rec renderElement =
       /* Size hint is used by parent Stack; here we just render the child */
       renderElement(~measuring, ~origin?, child, rootCtx, constraints, ~path)
 
+    | Element.Container(child) =>
+      /* A container-query boundary (A1), and NOTHING else: the child renders
+       * with the same constraints, at the same origin, at the same path, so
+       * the output is byte-identical to rendering the child directly and no
+       * component's identity shifts. The only effect is that
+       * useContainerSize() inside the subtree reports THIS box.
+       *
+       * Pushed in measuring mode too: a stack measures an Auto child and then
+       * renders it for real, and a component whose output depends on the
+       * container's width must give the same answer in both passes or its
+       * measured size will not match what it paints.
+       *
+       * Fun.protect, so a raising child cannot leave the stack unbalanced for
+       * the rest of the frame. */
+      let saved = containerStack^;
+      containerStack := [constraints, ...saved];
+      Fun.protect(
+        ~finally=() => containerStack := saved,
+        () =>
+        renderElement(~measuring, ~origin?, child, rootCtx, constraints, ~path)
+      );
+
     | Element.Lazy(f) =>
       renderElement(~measuring, ~origin?, f(), rootCtx, constraints, ~path)
 
@@ -1903,6 +1967,7 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
      previously started application. */
   Hooks.currentInstance := Hooks.freshInstance();
   currentConstraints := defaultConstraints;
+  resetContainerStack(defaultConstraints);
 
   let running = ref(true);
 
@@ -1955,9 +2020,12 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
       resetClipStack(constraints);
 
       /* Root body runs before renderElement - install this frame's
-         constraints so a root-level useLayout() sees them (see the same
+         constraints so a root-level useContainerSize() sees them (see the same
          assignment in startHeadless's doRender for the full story). */
       currentConstraints := constraints;
+      /* Container queries (A1) start at the frame: a useContainerSize()
+         made outside every <Container> answers "the window". */
+      resetContainerStack(constraints);
 
       let output =
         Perf.span("render", () => {
@@ -2109,6 +2177,7 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
     /* Start from a clean world (see startHeadlessLoop) */
     Hooks.currentInstance := Hooks.freshInstance();
     currentConstraints := defaultConstraints;
+    resetContainerStack(defaultConstraints);
 
     /* One flag, one source of truth: <Static> and useStdout both consult
        instanceState.staticAllowed, and Fullscreen turns it off before the
@@ -2307,9 +2376,12 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
         resetClipStack(constraints);
 
         /* Root body runs before renderElement - install this frame's
-           constraints so a root-level useLayout() sees them (see the same
+           constraints so a root-level useContainerSize() sees them (see the same
            assignment in startHeadless's doRender for the full story). */
         currentConstraints := constraints;
+        /* Container queries (A1) start at the frame: a useContainerSize()
+           made outside every <Container> answers "the window". */
+        resetContainerStack(constraints);
 
         let output =
           Perf.span("render", () => {
@@ -2544,6 +2616,7 @@ let startHeadless =
   let myInstance = Hooks.freshInstance();
   Hooks.currentInstance := myInstance;
   currentConstraints := defaultConstraints;
+  resetContainerStack(defaultConstraints);
 
   /* Virtual clock: timers (useInterval/useTimeout) are scheduled against
      this instead of the wall clock, so advanceTime below can fire them
@@ -2601,11 +2674,14 @@ let startHeadless =
     resetClipStack(constraints);
 
     /* The ROOT component body runs in C.make(), BEFORE renderElement gets a
-       chance to install this frame's constraints - so a useLayout() call in
-       the root body would otherwise read whatever the ref last held (the
-       80x24 default, forever). Install them here, at every root render
-       site, so the root sees the same width/height its children do. */
+       chance to install this frame's constraints - so a useContainerSize()
+       call in the root body would otherwise read whatever the refs last
+       held (the 80x24 default, forever). Install them here, at every root
+       render site, so the root sees the same width/height its children do. */
     currentConstraints := constraints;
+    /* Container queries (A1) start at the frame: a useContainerSize()
+       made outside every <Container> answers "the window". */
+    resetContainerStack(constraints);
 
     let output =
       Perf.span("render", () => {

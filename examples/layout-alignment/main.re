@@ -17,15 +17,21 @@
 open Matcha;
 
 /* Box component - renders a bordered box with content.
- * Uses layout constraints to stretch to available height when parent uses AlignStretch.
+ * Uses its container's height to stretch when the parent uses AlignStretch.
  * When availHeight <= minHeight, uses minHeight (natural size).
  * When availHeight > minHeight, stretches to availHeight.
+ *
+ * Each <Box> below is wrapped in a <Container>, which is what makes
+ * useContainerSize() report the SLOT the stack allocated it rather than the
+ * whole frame. That wrapper is the point of the hook: responsive queries are
+ * container-relative by default, so a component that wants to know about its
+ * own box has to declare a boundary around itself.
  */
 module Box = {
   [@component]
   let make = (~label: string, ~width: int, ~minHeight: int, ()) => {
-    /* Get available height from layout constraints */
-    let {Runtime.availHeight, _} = useLayout();
+    /* Get available height from the enclosing <Container> */
+    let {Runtime.availHeight, _} = useContainerSize();
 
     let w = max(width, String.length(label) + 4);
     /* Only stretch if availHeight is explicitly larger than our minimum */
@@ -162,18 +168,18 @@ let make = () => {
       /* HStack demo - horizontal layout */
       <Sized size={Chars(12)}>
         <HStack gap=1 align justify>
-          <Box label="A" width=8 minHeight=3 />
-          <Box label="B" width=8 minHeight=5 />
-          <Box label="C" width=8 minHeight=4 />
+          <Container> <Box label="A" width=8 minHeight=3 /> </Container>
+          <Container> <Box label="B" width=8 minHeight=5 /> </Container>
+          <Container> <Box label="C" width=8 minHeight=4 /> </Container>
         </HStack>
       </Sized>;
     } else {
       /* VStack demo - vertical layout */
       <Sized size={Chars(15)}>
         <VStack gap=0 align justify>
-          <Box label="A" width=12 minHeight=3 />
-          <Box label="BB" width=18 minHeight=3 />
-          <Box label="CCC" width=24 minHeight=3 />
+          <Container> <Box label="A" width=12 minHeight=3 /> </Container>
+          <Container> <Box label="BB" width=18 minHeight=3 /> </Container>
+          <Container> <Box label="CCC" width=24 minHeight=3 /> </Container>
         </VStack>
       </Sized>;
     };

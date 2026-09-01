@@ -109,15 +109,15 @@ module AutoHStackTallChild = {
     ]);
 };
 
-/* A root component that renders whatever useLayout() reports. The ROOT body
+/* A root component that renders whatever useContainerSize() reports. The ROOT body
  * runs in C.make(), BEFORE renderElement installs the frame's constraints,
  * so the runtime has to install them at each root render site itself -
- * regression: a root-level useLayout() used to read the 80x24 default
+ * regression: a root-level useContainerSize() used to read the 80x24 default
  * forever, whatever the real terminal size (examples/claude-code drew its
  * input-box borders 80 wide inside a 100-column terminal). */
 module RootLayoutEcho = {
   let make = () => {
-    let c = Matcha.useLayout();
+    let c = Matcha.useContainerSize();
     Element.text(
       "root:"
       ++ string_of_int(c.Runtime.availWidth)
@@ -398,7 +398,7 @@ let run = () => {
       handle.quit();
     });
 
-    Test.run("a root-level useLayout sees the real terminal size", () => {
+    Test.run("a root-level useContainerSize sees the real terminal size", () => {
       /* Deliberately NOT 80x24: the default config masks this bug - the
          stale ref happens to hold the same values. */
       let config: Runtime.headlessConfig = {width: 57, height: 9};

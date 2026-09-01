@@ -14,6 +14,7 @@
  * - Component(typeId, key, props, renderFn): A component call site
  * - WithContext(setup, teardown, t): Context boundary for providers
  * - Static(list(t)): Append-only output committed above the live region
+ * - Container(t): Layout-transparent container-query boundary
  * - Empty: No content
  *
  * Components: the element is a plain DESCRIPTION of a call site - a type ID, an
@@ -39,7 +40,7 @@
  *
  * JSX Components:
  * This module also exports JSX-compatible component modules:
- * Text, VStack, HStack, Sized, Fragment
+ * Text, VStack, HStack, Sized, Container, Static, Fragment
  *
  * Text Styling:
  * The Text component supports optional styling props:
@@ -234,6 +235,26 @@ type t =
    * [Runtime.renderElement]'s WrappedText case and [StyledText.wrapString].
    * Outside layout (Element.render), this is a no-op passthrough to the
    * child - wrapping needs a width, which detached rendering doesn't have. */
+  | Container(t)
+  /* Container(child): a QUERY boundary, and nothing else (A1).
+   *
+   * LAYOUT-TRANSPARENT by contract: it renders [child] with exactly the
+   * constraints it was handed, at exactly the same tree path, so adding or
+   * removing one can never move a cell or reset a hook. Runtime's
+   * getSizeHint/unwrapSized/isInvisibleToLayout all see straight through it
+   * for the same reason - a <Sized> or a <Static> stays itself when it is
+   * wrapped.
+   *
+   * What it does do is push its own box onto [Runtime.containerStack] while
+   * its subtree renders, which is what [Matcha.useContainerSize] reads. That
+   * makes every responsive decision inside it relative to THIS region rather
+   * than to the window - CSS container queries, for a terminal.
+   *
+   * Note what it is NOT: it does not size, clip, or scope [Percent(n)].
+   * Percent stays parent-relative (like CSS %); containers affect QUERIES
+   * only. <Sized> and <ScrollView> are deliberately not boundaries either -
+   * wrapping something to nudge layout must not silently re-target its
+   * descendants' queries. Declare a <Container> where you want one. */
   | Viewport(t, viewportOptions);
   /* Viewport(child, options): a scrolling window onto [child] (B5). The
    * child is rendered at its NATURAL height and the window keeps only the
@@ -289,6 +310,10 @@ let hstack =
 
 /* Wrap an element with a size hint for parent Stack */
 let sized = (size: size, el: t): t => Sized(el, size);
+
+/* Wrap an element in a container-query boundary. Layout-transparent; see the
+ * Container variant. */
+let container = (el: t): t => Container(el);
 
 /* Empty element constant */
 let empty = Empty;
@@ -619,6 +644,13 @@ let rec render = (el: t): string => {
   | WrappedText(_mode, child) =>
     /* No layout width here (see [t]'s WrappedText doc) - pass through. */
     render(child)
+  | Container(child) =>
+    /* A container is layout-transparent and has real content, so a detached
+     * render is simply its child's. The query boundary it declares needs a
+     * frame (Runtime pushes it onto containerStack); detached rendering has
+     * none, so useContainerSize inside here falls back to whatever
+     * constraints were last installed. */
+    render(child)
   | Viewport(child, options) =>
     /* No layout height here (see [t]'s Viewport doc), and a scroller's
      * natural size IS its content, so the UNCLIPPED content is the right
@@ -856,6 +888,26 @@ module Sized = {
   let make = (~children: t, ~size: size, ()) => Sized(children, size);
   let createElement = (~children: t, ~size: size, ()) =>
     Lazy(() => make(~children, ~size, ()));
+};
+
+/* Container component - declare a container-query boundary.
+ *
+ * Usage:
+ *   <Sized size={Percent(40)}>
+ *     <Container> <Sidebar /> </Container>
+ *   </Sized>
+ *
+ * Everything inside now sizes itself against THAT pane: a
+ * [useContainerSize()] anywhere in the subtree reports the container's box,
+ * not the terminal's and not the caller's own slot.
+ *
+ * It renders its child with the constraints it received and changes nothing
+ * else - adding or removing one never moves a cell (see the [Container]
+ * variant for the full contract).
+ */
+module Container = {
+  let make = (~children: t, ()) => Container(children);
+  let createElement = (~children: t, ()) => Lazy(() => make(~children, ()));
 };
 
 /* Static component - commit output above the live region, once per item.

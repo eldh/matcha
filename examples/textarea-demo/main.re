@@ -36,7 +36,7 @@ let make = () => {
   });
 
   /* Get layout constraints */
-  let {Runtime.availWidth: width, _} = useLayout();
+  let {Runtime.availWidth: width, _} = useContainerSize();
   let editorWidth = min(60, width - 4);
 
   let header = "TextArea Demo - Press ESC to quit";

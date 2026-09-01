@@ -17,6 +17,7 @@ let () = {
   Textwidth_tests.run();
   Styledtext_tests.run();
   Layout_tests.run();
+  Container_tests.run();
   Textarea_tests.run();
   Context_tests.run();
   Headless_tests.run();
