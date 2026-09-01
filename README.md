@@ -596,6 +596,16 @@ dialog in the whole frame, and in Inline mode the frame is the terminal — so
 centring grows the live region to the full terminal height even when the app
 itself is six rows tall.
 
+**A full-height app should be `Fullscreen`, not inline.** Inline paints at
+the cursor, so a frame as tall as the terminal makes the terminal scroll to
+fit it, pushing your prompt away. Quitting erases the region, but nothing
+un-scrolls a terminal, so you are left with a screenful of blank rows above
+the new prompt. If your root Flexes to fill the screen — as a log viewer or
+a dashboard does — start it with
+`Runtime.start(~screen=Fullscreen, (module App))`, which the terminal
+restores exactly on exit. Keep inline for apps that stay a handful of rows
+tall (`examples/chat`, `examples/static-demo`).
+
 `<Overlay>` (`Element.Overlay`) is the raw layer underneath `<Modal>`: the
 same box, capture, container and dismiss behaviour, without the border, the
 Esc binding, the focus restore or `~isOpen` (an `<Overlay>` in the tree is

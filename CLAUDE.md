@@ -261,6 +261,21 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   stacks (`kittyDepth`, `kittyDepthMain`) and both `test/pty_tests.re`
   lifecycle cases assert `kittyDepthMain == 0` after exit.
 
+- **An INLINE app must be SHORTER than the terminal — a full-height app
+  belongs in `Fullscreen`.** Inline paints the live region at the cursor, so
+  a frame as tall as the terminal forces the terminal to *scroll* to make
+  room, pushing the user's prompt and history up and away. Quitting erases
+  the region correctly, but nothing can un-scroll a terminal, so the user is
+  left with a screenful of blank rows between their last command and the new
+  prompt. This is not a bug in the erase — it is an app that asked for the
+  whole screen while rendering inline, and `examples/command-menu` shipped
+  that way until a user hit exactly this. **If your root Flexes to fill the
+  screen, pass `~screen=Fullscreen`**: the alternate screen is restored
+  exactly on exit. Compact inline shape: `examples/chat`,
+  `examples/static-demo`. Fullscreen shape: `examples/claude-code`,
+  `examples/command-menu`. Pinned by a PTY pair — the fullscreen case
+  asserts no inline region erase ever appears, and the chat case asserts the
+  same detector *does* fire, so the guard cannot pass vacuously.
 - **The interactive loop renders INLINE by default; `quit(ClearScreen)`
   erases only the live region.** In `Inline` mode there is no
   `ESC[2J`/alt-screen: the app paints at the current cursor position via

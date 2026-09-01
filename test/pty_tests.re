@@ -29,6 +29,38 @@ let chatBin = "examples/chat/main.exe";
 let ccBin = "examples/claude-code/main.exe";
 let cmBin = "examples/command-menu/main.exe";
 
+/* Does the byte log contain an INLINE live-region erase - a relative
+   cursor-up (ESC[<n>A) immediately followed by erase-below (ESC[0J)?
+   That pair is LiveRegion.erase, i.e. the signature of an app that painted
+   a region at the cursor. A fullscreen app must never emit it. */
+let hasInlineRegionErase = (log: string): bool => {
+  let eraseBelow = "\027[0J";
+  let n = String.length(log);
+  let el = String.length(eraseBelow);
+  let rec scan = i =>
+    if (i + el > n) {
+      false;
+    } else if (String.sub(log, i, el) == eraseBelow) {
+      /* Walk back over the digits of a preceding ESC[<n>A. */
+      let rec back = (j, sawDigit) =>
+        if (j < 0) {
+          false;
+        } else if (log.[j] == 'A' && sawDigit == 0) {
+          back(j - 1, 1);
+        } else if (sawDigit >= 1 && log.[j] >= '0' && log.[j] <= '9') {
+          back(j - 1, 2);
+        } else if (sawDigit == 2 && log.[j] == '[') {
+          j > 0 && log.[j - 1] == '\027';
+        } else {
+          false;
+        };
+      back(i - 1, 0) || scan(i + 1);
+    } else {
+      scan(i + 1);
+    };
+  scan(0);
+};
+
 /* Index of the first screen row containing `needle`, or -1. */
 let rowIndexContaining = (vt: Vterm.t, needle: string): int => {
   let rows = Vterm.snapshot(vt);
@@ -156,6 +188,16 @@ let run = () => {
         Test.assertFalse(
           Vterm.inAltScreen(Pty.vterm(s)),
           "and the terminal is on its primary buffer throughout",
+        );
+        /* POSITIVE CONTROL for the detector the command-menu case relies on
+           (see hasInlineRegionErase). An inline app quitting with
+           ClearScreen erases its live region with a relative cursor-up plus
+           erase-below, so the detector MUST fire here. Without this, the
+           command-menu assertFalse could pass simply because the detector
+           never fires for anything. */
+        Test.assertTrue(
+          hasInlineRegionErase(log),
+          "an inline app does erase its region on quit - detector works",
         );
         assertNoUnknown(s, "chat full lifecycle");
       })
@@ -503,6 +545,32 @@ let run = () => {
               "Ctrl+C with the modal open",
             );
             assertNoUnknown(s, "command-menu after quitting from a modal");
+
+            /* QUITTING LEAVES THE TERMINAL WHERE IT WAS.
+             *
+             * This app fills the screen, and it used to render INLINE - which
+             * paints the live region at the cursor, forcing the terminal to
+             * scroll a whole screen to make room. Quitting erased the region
+             * correctly, but nothing can un-scroll a terminal, so the user was
+             * left with a screenful of blank rows between their last command
+             * and the new prompt. The fix was the app's mode, not the erase:
+             * a full-height app belongs on the alternate screen, which the
+             * terminal restores exactly.
+             *
+             * So: exactly one enter and one exit, and NO inline region erase
+             * (ESC[nA ESC[0J) anywhere in the session - its presence would
+             * mean something painted a region at the cursor again. */
+            let log = Pty.byteLog(s);
+            Test.assertContains(
+              log,
+              "\027[?1049h",
+              "entered the alternate screen",
+            );
+            Test.assertContains(log, "\027[?1049l", "and left it again");
+            Test.assertFalse(
+              hasInlineRegionErase(log),
+              "a fullscreen app never erases an inline live region",
+            );
           })
         });
 
