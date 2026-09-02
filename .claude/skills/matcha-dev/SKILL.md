@@ -1,6 +1,12 @@
 ---
 name: matcha-dev
-description: Use when working on the Matcha framework's own ReasonML/OCaml source (lib/, ppx/, test/, examples/) — adding or modifying elements/components, writing or debugging headless tests, working with the [@component] PPX and JSX expansion, or diagnosing dune build errors specific to this repo's dune/ppx/warnings setup.
+description: >-
+  Use when working on the Matcha framework's own ReasonML/OCaml source
+  (lib/, ppx/, test/, examples/) — adding or modifying elements/components,
+  writing or debugging headless tests, working with the [@component] PPX
+  and JSX expansion, or diagnosing dune build errors specific to this
+  repo's dune/ppx/warnings setup. Do not use for building an application
+  on top of matcha - see the matcha-app skill for that.
 ---
 
 # Matcha framework development
@@ -94,51 +100,15 @@ Consequences worth knowing before you write the component:
 
 ### Adding a floating layer
 
-`<Modal>` (`lib/Modal.re`) is the ready-made dialog; `<Overlay>`
-(`Element.Overlay`) is the raw layer underneath it. Four rules cover almost
-everything you need to get right:
-
-1. **Put the node DIRECTLY IN A STACK, next to the rest of the app** —
-   `<VStack> <Pane/> <Modal isOpen .../> <StatusBar/> </VStack>`. It costs
-   that stack nothing in either state. Do **not** wrap it in a component of
-   your own: `isInvisibleToLayout` does not look through `Component`, so a
-   component that returns an `Overlay` takes a blank row in every stack that
-   holds it, open or closed. (`Modal.createElement` returns
-   `Lazy(() => isOpen ? Overlay(...) : Empty)` for exactly this reason.)
-2. **Layer keys go INSIDE with `useInput`; globals go OUTSIDE with
-   `useKeyDown`.** Only what is rendered inside the `Overlay`'s child is a
-   *member* of the layer, and only members' `useInput` handlers fire while it
-   is topmost. `useKeyDown` is never captured — which is what keeps Ctrl+C
-   working, and why **binding Ctrl+C with `useInput` makes your app
-   unquittable under a modal** (raw mode has no ISIG). A hook written in a
-   component that merely *returns* the overlay is outside the layer and would
-   be suppressed by its own dialog.
-3. **The dialog is its own container.** An overlay pushes its box onto
-   `containerStack`, so `useContainerSize()` inside reports the dialog, not
-   the window. There is no escape hatch to reach for and none exists.
-4. **Pair the headless assertions with Vterm grid assertions.** Compositing
-   is cell surgery on already-rendered ANSI — splitting a row at a column,
-   padding it, adding `Dim` to somebody else's cells — and its failure modes
-   ("the columns right of the box shifted by one", "the shadow painted over
-   the log instead of dimming it") are invisible in `stripAnsi`'d text.
-   `test/modal_tests.re` is the pattern: feed `getOutput(false)` into
-   `Vterm.create` (rejoining lines with **CR LF**, since Vterm models a bare
-   LF the way a terminal does — down a row, same column) and assert
-   `cellGlyph`/`cellSgr`.
-
-Always at a **non-80x24** size, and always with the box somewhere other than
-dead centre, so a coordinate bug cannot hide behind a symmetric layout.
-
-If you change the compositor, the gate is: `git status test/goldens/` shows
-zero modifications. `compositeOverlays` returns its input *physically*
-unchanged when no layer is open, and that is what keeps every existing golden
-valid — if one moves, the fast path broke.
-
-Any change under 1–3 above changes rendering, so expect `dune runtest` to
-report **golden** mismatches (`test/golden_tests.re` vs `test/goldens/*.txt`).
-Read the diff before you regenerate — an unintended golden change is a bug.
-When the change genuinely is intended, regenerate from the repo root with
-`UPDATE_GOLDENS=1 dune exec test/run_tests.exe`.
+`Runtime.compositeOverlays` splices `Overlay` layers over the finished frame
+and MUST return `base` physically unchanged when none is open — the gate on
+any compositor change is `git status test/goldens/` showing zero
+modifications, since every existing golden depends on that fast path.
+`isInvisibleToLayout` sees through `Lazy` but not `Component`, which is why
+`Modal.createElement` returns `Lazy(() => isOpen ? Overlay(...) : Empty)`
+rather than a component wrapping one. App-authoring guidance — `<Modal>`/
+`<Overlay>` usage, `useInput` vs `useKeyDown`, dialog container sizing —
+lives in the **matcha-app** skill.
 
 ## How the `[@component]` PPX expands
 
@@ -204,115 +174,11 @@ Key points that matter when debugging or hand-writing the expansion (as
   — **not** `lib/dune`. Code inside `lib/` cannot use `[@component]` or JSX;
   it's written in the fully-expanded form by hand.
 
-## Writing a headless test
-
-Headless tests drive a real component tree without a terminal, using
-`Runtime.startHeadless`. Follow the pattern in `test/headless_tests.re`:
-
-```
-open Matcha;
-
-module CounterApp = {
-  [@component]
-  let make = () => {
-    let (count, setCount) = Hooks.useState(0);
-    let quit = Event.useQuit();
-
-    Event.useKeyDown((key, _) =>
-      switch (key) {
-      | Key.Arrow_up => setCount(count + 1)
-      | Key.Char('q') => quit(PreserveScreen)
-      | _ => ()
-      }
-    );
-
-    <Text> {"Count: " ++ string_of_int(count)} </Text>;
-  };
-};
-
-let run = () => {
-  Test.group("Counter headless", () => {
-    Test.run("sendKey triggers state update", () => {
-      let handle = Runtime.startHeadless((module CounterApp));
-      handle.sendKey(Key.Arrow_up, Key.noModifiers);
-      let output = handle.getOutput(true /* stripAnsi */);
-      Test.assertContains(output, "Count: 1", "count should increment");
-      handle.quit();
-    });
-  });
-};
-```
-
-Notes:
-
-- `startHeadless` renders once immediately on creation; `getOutput`/
-  `getLines` return the *last rendered* frame, so call `sendKey`/`render`/
-  `resize` before reading if you expect updated content.
-- `sendKey` only triggers a re-render if the handler actually changed state.
-  The gate is the **root** context's `needsRerender`; a `setState` inside a
-  component flags both its own context and the root, which is what the loop
-  watches. A key with no matching handler branch is a no-op and `getOutput`
-  will be unchanged. Use `handle.render()` to force a frame regardless.
-- Each `startHeadless` call gets its **own `Hooks.instanceState`**, and every
-  handle method re-installs it first, so several handles in one test file
-  can't corrupt each other's hook state. Don't try to interleave handles
-  across threads.
-- A component that renders is rendered **every** time it is visited, and a
-  stack visits an `Auto` child twice per frame (measure, then real). Effects
-  still fire once per frame — they're committed after the whole tree renders.
-  If you're counting renders in a test, count effect runs, not body calls.
-- Always call `handle.quit()` at the end of a test, even if you're only
-  asserting on output — it's cheap and keeps behavior consistent with real
-  app teardown (mirrors `useQuit`'s cleanup path).
-- Register the new suite's `run()` in `test/run_tests.re` alongside the
-  existing `Element_tests.run(); Headless_tests.run(); ...` calls, and add
-  its module to the `(modules ...)` list in `test/dune`'s `(test ...)`
-  stanza, or `dune runtest` won't pick it up.
-
-## Testing apps that use input, focus, timers, Static, mouse or scrolling
-
-`test/chat_tests.re` is the canonical reference — it drives the real
-`examples/chat` component and uses every recipe below at least once. The
-helpers live in `test/input.re`. The recipes:
-
-- **Structure the app as a library + thin launcher** so tests can start the
-  real component in-process: `examples/chat/ChatApp.re` (a `(library)` in
-  the example's `dune`) + a one-line `main.re`. The test then does
-  `Runtime.startHeadless((module ChatApp.App))` — never copy the component
-  into the test.
-- **End-to-end typing**: `Input.feedBytes(handle, "hi\r")` runs raw bytes
-  through a real `InputDecoder` — the same path a terminal read takes —
-  and delivers each decoded event through the handle. Use it over bare
-  `sendKey` when the test is about what a terminal would actually deliver
-  (Enter is `"\r"`, Ctrl+C is `"\003"`, a real bracketed paste is
-  `"\027[200~...\027[201~"`).
-- **Live frame vs transcript**: `handle.getOutput(true)`/`getLines(true)`
-  are the *current* frame only; `handle.getStaticOutput(true)` is
-  everything `<Static>`/`useStdout` ever committed, accumulated. Assert
-  "committed exactly once, ever" against the latter (count occurrences,
-  then render more frames and count again); assert what's on screen against
-  the former. A committed item must never appear in `getOutput`.
-- **Focus**: assert `handle.getFocusedId() == Some("my-id")` — never parse
-  the focus marker out of the frame. Drive the ring with `Input.pressTab`/
-  `pressShiftTab`. Prove `~isActive` gating by typing at an unfocused
-  input and asserting nothing changed.
-- **Paste**: `Input.feedPaste(handle, "line1\nline2")` for the handle-level
-  path; assert the newline did *not* trigger Enter-bound behavior — a paste
-  is data, not keystrokes.
-- **Timers**: `handle.advanceTime(ms)` is the only way time passes
-  headlessly — tests never sleep. It fires `useInterval`/`useTimeout`
-  deadlines in order, re-rendering after each. An interval with `~ms=0` is
-  disabled (the Ink `delay={null}` idiom), so advancing a huge amount while
-  idle is a cheap "nothing is running" assertion.
-- **Mouse**: `Input.clickAt(~x, ~y)` in live-region coordinates (0-based,
-  frame top-left) fires the innermost `<Clickable>` whose painted box
-  contains the point; `handle.sendMouse({kind: ScrollDown, ...})` wheel-
-  scrolls the innermost *wheel-interested* component under the pointer (a
-  `<ScrollView>`, through any plain Clickables on top of it). When a click
-  lands somewhere unexpected, print `handle.getLines(true)` and count rows
-  — that is the whole debugging loop.
-- **Fresh handle per test.** Handles are cheap and independent; never share
-  one across `Test.run` cases.
+> Writing a headless test for an application built on matcha, and testing
+> apps that use input, focus, timers, `<Static>`, mouse or scrolling, is
+> covered by the **matcha-app** skill (`references/testing.md`). What
+> follows here is matcha's own test framework and the layers that pin the
+> framework's own rendering.
 
 ## Writing assertions with `test/Test.re`
 
@@ -438,98 +304,8 @@ for real; **never assert after a bare sleep.** An exit reported as
 the kernel instead of the application, and the terminal restore never ran.
 Keep this suite to a handful of cases — it is by far the slowest layer.
 
-## Profiling a matcha app
-
-Every layer above answers "is it correct". `lib/Perf.re` answers "where did
-the time go", with attribution down to the individual component. It is off by
-default, costs nothing off, and **only ever writes files — never stdout or
-stderr** (interactive stdout is escape bytes; stream-headless stdout is the
-frames the goldens parse).
-
-### Turning it on
-
-For a **binary**, set the destination in the environment:
-
-```
-MATCHA_TRACE=/tmp/before.json
-```
-
-For a **test**, drive it directly — and always restore, or the process-wide
-`at_exit` hook writes a trace the next test never asked for:
-
-```reason
-let path = Filename.temp_file("trace-", ".json");
-Sys.remove(path);
-Fun.protect(~finally=() => Perf.disable(), () => {
-  Perf.enable(path);
-  /* ... drive the headless handle ... */
-  Perf.flush();
-});
-```
-
-### Recording an interaction
-
-Profile a *script*, not a session: the same bytes each run, so before and
-after are comparable. Both HANG TRAPS still apply — `timeout`,
-`MATCHA_HEADLESS=1`, and stdin that reaches EOF, together:
-
-```
-printf '\033[B\033[B\033[B\033[Bq' | timeout 60 env \
-  MATCHA_HEADLESS=1 MATCHA_WIDTH=200 MATCHA_HEIGHT=45 \
-  MATCHA_TRACE=/tmp/before.json ./myapp > /dev/null
-```
-
-`\033[B` is arrow-down, `\033[A` arrow-up, `\033[C`/`\033[D` right/left. Set
-the geometry explicitly: frame cost scales with it, and a default 80×24 will
-not reproduce what the user sees.
-
-### Reading the summary
-
-Read `/tmp/before.json.summary.txt` (the trace itself is Chrome Trace Event
-JSON — drop it into <https://ui.perfetto.dev> for a flame view when the
-summary is not enough).
-
-1. **`== slowest frames ==` first.** Each entry gives the frame's duration,
-   its `phases:` split (`render`/`paint`/`effects`/`unmount-sweep`/…) and
-   `top:`, the three most expensive non-phase spans inside it. If one frame
-   is 50× the others, that frame is the bug.
-2. **`== spans ==` second, and read the `self` column.** `total` includes
-   nested work, so a component's `total` is mostly its children;
-   `self` is the time actually spent in it.
-3. Rows suffixed `~measuring` are the **layout measure pass**: a stack renders
-   an `Auto` child twice per frame, once to measure it. A fat `~measuring`
-   row means measuring is what costs, not painting.
-4. `dispatch-key`/`dispatch-paste`/`dispatch-mouse` and `timers` run
-   *between* frames, so they show up in the spans table only, never under a
-   frame.
-
-Component rows are labelled with the ppx `typeId` — `file:line:col` of the
-`[@component] let make`, so a row points straight at a source line.
-
-### Application spans
-
-Wrap app-level work so it nests under the component that ran it:
-
-```reason
-Perf.span("tokenize-file", () => Highlight.highlight(~path, lines));
-```
-
-Names must not contain spaces (the summary is whitespace-column parsed);
-hyphenate them.
-
-### Below span level
-
-`Perf` bottoms out at whatever you wrapped. To go finer, use macOS
-`sample <pid>` or Instruments on the running binary. (`olly`/OCaml
-`runtime_events` would be the native answer but is not installed in this
-switch and would be a new opam dependency.)
-
-### The rule
-
-**Never claim a performance win without a before AND an after summary of the
-same scripted interaction**, and quote both `== slowest frames ==` sections.
-"It feels faster" is not a measurement, and neither is a single after-only
-recording.
+> Profiling an application built on matcha with `lib/Perf.re` tracing is
+> covered by the **matcha-app** skill (`references/profiling.md`).
 
 ## The `==`/`!=` vs `===`/`!==` rule (exact failure mode)
 

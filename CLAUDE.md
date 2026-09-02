@@ -455,6 +455,18 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   generated: **edit `dune-project`**, or `matcha.opam.template` for the two
   fields dune cannot express (`available:`, `x-maintenance-intent:`).
 
+## Two skills, and which one applies
+
+`.claude/skills/matcha-dev/` is for changing **this repository** — elements,
+the runtime, the PPX, the test layers.
+
+`plugins/matcha-app/skills/matcha-app/` is for building an application **on
+top of** matcha, and is shipped to consumers through this repository's
+Claude Code plugin marketplace (`.claude-plugin/marketplace.json`; see the
+README). Anything learned while writing an app belongs there, not in
+`matcha-dev` and not in this file — the two files here only load inside this
+repository, and an app author is by definition somewhere else.
+
 ## Releasing
 
 `CHANGELOG.md` is the record; `RELEASING.md` is the procedure;

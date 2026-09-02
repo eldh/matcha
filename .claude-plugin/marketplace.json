@@ -1,0 +1,25 @@
+{
+  "name": "matcha",
+  "owner": {
+    "name": "Andreas Eldh",
+    "url": "https://github.com/eldh"
+  },
+  "metadata": {
+    "description": "Skills for building terminal applications with the matcha framework.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "matcha-app",
+      "source": "./plugins/matcha-app",
+      "displayName": "Matcha app development",
+      "description": "Build a terminal application on the matcha framework: project layout, root component and state, row rendering, keyboard and mouse input, keeping slow work off the render path, and headless testing.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Andreas Eldh"
+      },
+      "homepage": "https://github.com/eldh/matcha",
+      "keywords": ["matcha", "terminal", "tui", "reason", "ocaml"]
+    }
+  ]
+}

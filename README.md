@@ -828,6 +828,39 @@ See `CLAUDE.md` for a deeper architecture map and contributor-facing
 workflow notes, and `.claude/skills/matcha-dev/SKILL.md` for step-by-step
 recipes (adding a component, writing a headless test, etc.).
 
+## Building an app, with Claude Code
+
+This repository is also a Claude Code plugin marketplace. It ships a
+**`matcha-app`** skill that teaches an agent how to build an application on
+matcha: project layout, the root component and its state, row rendering,
+keyboard and mouse input, keeping slow work off the render path, and
+headless testing. It is distilled from two real applications rather than
+from the API docs, so it leads with the mistakes rather than the surface.
+
+**Per project.** Commit this to your app's `.claude/settings.json` and
+anyone who clones the repository gets the skill with no further step:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "matcha": { "source": { "source": "github", "repo": "eldh/matcha" } }
+  },
+  "enabledPlugins": { "matcha-app@matcha": true }
+}
+```
+
+**Per machine**, if you would rather have it everywhere:
+
+```
+/plugin marketplace add eldh/matcha
+/plugin install matcha-app@matcha
+```
+
+Either way Claude Code refreshes the skill from GitHub in the background, so
+it tracks the framework. The source is under `plugins/matcha-app/` and is
+worth reading on its own — most of it is a list of failure modes with the
+reason each one happens.
+
 ## Releasing
 
 `CHANGELOG.md` records what changed in each version. `RELEASING.md`
