@@ -1,5 +1,5 @@
 open Matcha;
 
 let () = {
-  Runtime.start((module App));
+  Runtime.start(~screen=Fullscreen, (module App));
 };

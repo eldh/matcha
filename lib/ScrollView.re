@@ -196,7 +196,12 @@ let make = (props: props): Element.t => {
     | None => true
     };
   if (wantsMouse) {
-    Hooks.useMouse(ev =>
+    /* ~click=false: this body acts on the wheel and nothing else, so
+       claiming clicks would only swallow them. It is the mirror of what
+       <Clickable> declares with ~wheel=false, and it is what lets a click on
+       a ~rows list - which has no child elements to hit - reach the
+       application that rendered it. */
+    Hooks.useMouse(~click=false, ev =>
       switch (ev.Mouse.kind) {
       | Mouse.ScrollUp => scrollBy(-3)
       | Mouse.ScrollDown => scrollBy(3)

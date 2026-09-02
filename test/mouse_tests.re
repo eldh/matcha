@@ -33,6 +33,16 @@ let wheelUpAt = (~x: int, ~y: int): Mouse.event => {
   ctrl: false,
 };
 
+let wheelDownAt = (~x: int, ~y: int): Mouse.event => {
+  Mouse.kind: Mouse.ScrollDown,
+  button: Mouse.NoButton,
+  x,
+  y,
+  shift: false,
+  alt: false,
+  ctrl: false,
+};
+
 let releaseAt = (~x: int, ~y: int): Mouse.event => {
   Mouse.kind: Mouse.Up,
   button: Mouse.Left,
@@ -137,6 +147,113 @@ module RootHandlerApp = {
       <Sized size={Chars(1)}> <Text> "not a target" </Text> </Sized>
     </VStack>;
   };
+};
+
+/* ============================================================================
+ * 5b. A [@component] ROOT: the same escape hatch, one context further down
+ *
+ * Runtime calls the module's `make` with the root context current, so an
+ * application written as a bare `make` registers its useMouse in rootCtx and
+ * gets the always-runs fan-out above. Hand the runtime `<App />` instead -
+ * the root element IS a component - and that registration moves into App's
+ * own child context, where the fan-out did not reach it: any inner component
+ * with a useMouse (a <ScrollView>, which takes one for the wheel) became the
+ * innermost target and swallowed every click, silently.
+ * ========================================================================== */
+
+let rootComponentEvents: ref(list(Mouse.event)) = ref([]);
+let innerSpyEvents: ref(list(Mouse.event)) = ref([]);
+
+module InnerSpy = {
+  [@component]
+  let make = () => {
+    Hooks.useMouse(ev => innerSpyEvents := [ev, ...innerSpyEvents^]);
+    <Text> "inner" </Text>;
+  };
+};
+
+module RootObserver = {
+  [@component]
+  let make = () => {
+    Hooks.useMouse(ev => rootComponentEvents := [ev, ...rootComponentEvents^]);
+    <VStack>
+      <Sized size={Chars(2)}> <Text> "filler" </Text> </Sized>
+      <Sized size={Chars(2)}> <InnerSpy /> </Sized>
+    </VStack>;
+  };
+};
+
+/* THE REGRESSION THIS PAIR EXISTS FOR.
+ *
+ * A <ScrollView> in ~rows mode has NO child elements, so there is nothing
+ * inside it to hit. Before ~click, its own useMouse - which acts on the
+ * wheel and ignores everything else - still won the hit test for clicks,
+ * dropped them on the floor, and the application never saw them. Silent, no
+ * error anywhere. `hog` lost a debugging session to it.
+ *
+ * Now ScrollView declares ~click=false, so a click falls through to
+ * whatever encloses it - here, the application itself. */
+let listRootEvents: ref(list(Mouse.event)) = ref([]);
+
+module ListRoot = {
+  [@component]
+  let make = () => {
+    Hooks.useMouse(ev => listRootEvents := [ev, ...listRootEvents^]);
+    let rows = Array.init(20, i => "row " ++ string_of_int(i));
+    <VStack>
+      <Sized size={Chars(1)}> <Text> "header" </Text> </Sized>
+      <Sized size={Flex(1)}> <ScrollView focusable=false rows /> </Sized>
+    </VStack>;
+  };
+};
+
+module ListRootApp = {
+  let make = () => <ListRoot />;
+};
+
+/* The application: its ROOT ELEMENT is a component. That single fact is the
+ * whole difference from RootHandlerApp above. */
+module ComponentRootApp = {
+  let make = () => <RootObserver />;
+};
+
+/* ============================================================================
+ * 5c. A [@component] root with a <Modal> in it
+ *
+ * The root component is an ordinary rendered component, so an open layer
+ * captures it exactly like any other non-member: the fan-out must not make
+ * the base application newly reachable while a dialog is up.
+ * ========================================================================== */
+
+let modalRootEvents: ref(list(Mouse.event)) = ref([]);
+
+module ModalRoot = {
+  [@component]
+  let make = () => {
+    let (isShowing, setShowing) = Hooks.useState(false);
+    Hooks.useMouse(ev => modalRootEvents := [ev, ...modalRootEvents^]);
+    Event.useKeyDown((key, _) =>
+      switch (key) {
+      | Key.Char('m') => setShowing(!isShowing)
+      | _ => ()
+      }
+    );
+    <VStack>
+      <Sized size={Chars(1)}> <Text> "base" </Text> </Sized>
+      <Modal
+        isOpen=isShowing
+        width={Element.Chars(10)}
+        height={Element.Chars(3)}
+        align={Element.OverlayTop(1)}
+        shadow=false>
+        <Text> "dialog" </Text>
+      </Modal>
+    </VStack>;
+  };
+};
+
+module ModalRootApp = {
+  let make = () => <ModalRoot />;
 };
 
 /* ============================================================================
@@ -322,6 +439,156 @@ let run = () =>
         "and a release over the target is not a click",
       );
 
+      handle.quit();
+    });
+
+    Test.run("innermost-wins still holds for a [@component] root", () => {
+      /* The residual asymmetry, pinned deliberately rather than left to be
+         rediscovered. A BARE `make` root is the root CONTEXT, which is
+         guaranteed every event whatever the hit test decided. A
+         [@component] root is an ordinary rendered component, so an inner
+         component that claims the click keeps it. That is plain
+         innermost-wins, and it is the behaviour the next test relies on. */
+      rootComponentEvents := [];
+      innerSpyEvents := [];
+      let config: Runtime.headlessConfig = {width: 30, height: 8};
+      let handle = Runtime.startHeadless(~config, (module ComponentRootApp));
+
+      /* The spy's box is rows 2..3, so (5, 3) is its second row. */
+      Input.clickAt(handle, ~x=5, ~y=3);
+
+      switch (innerSpyEvents^) {
+      | [ev] =>
+        Test.assertEqual(ev.Mouse.y, 1, "the inner component got it, rebased");
+        Test.assertEqual(ev.Mouse.x, 5, "with its own x")
+      | other =>
+        Test.assertEqual(
+          List.length(other),
+          1,
+          "the innermost target receives the click",
+        )
+      };
+      Test.assertEqual(
+        List.length(rootComponentEvents^),
+        0,
+        "and the enclosing root component does not also receive it",
+      );
+      handle.quit();
+    });
+
+    Test.run("a ScrollView does not swallow a click", () => {
+      /* THE REGRESSION. Rows mode has no child elements, so before ~click
+         the ScrollView itself was the innermost target for every click over
+         the list - and its handler ignores everything that is not a wheel
+         notch. The click vanished. */
+      listRootEvents := [];
+      let config: Runtime.headlessConfig = {width: 30, height: 10};
+      let handle = Runtime.startHeadless(~config, (module ListRootApp));
+
+      /* Row 0 is the header; rows 1..9 are the ScrollView. */
+      Input.clickAt(handle, ~x=4, ~y=5);
+      switch (listRootEvents^) {
+      | [ev] =>
+        Test.assertEqual(ev.Mouse.y, 5, "the application sees the click");
+        Test.assertEqual(ev.Mouse.x, 4, "with the x it landed on")
+      | [] =>
+        Test.assertTrue(false, "the click reached the application at all")
+      | other =>
+        Test.assertEqual(List.length(other), 1, "exactly once")
+      };
+      handle.quit();
+    });
+
+    Test.run("but a ScrollView still consumes the wheel", () => {
+      /* The other half: opting out of clicks must not opt out of the wheel,
+         or the fix would trade a swallowed click for a dead scroller. */
+      listRootEvents := [];
+      let config: Runtime.headlessConfig = {width: 30, height: 10};
+      let handle = Runtime.startHeadless(~config, (module ListRootApp));
+
+      let before = handle.getOutput(true);
+      handle.sendMouse(wheelDownAt(~x=4, ~y=5));
+      Test.assertFalse(
+        handle.getOutput(true) == before,
+        "the wheel still scrolls the list",
+      );
+      handle.quit();
+    });
+
+    Test.run("a [@component] root that IS the target fires exactly once", () => {
+      rootComponentEvents := [];
+      innerSpyEvents := [];
+      let config: Runtime.headlessConfig = {width: 30, height: 8};
+      let handle = Runtime.startHeadless(~config, (module ComponentRootApp));
+
+      /* Row 0 is the filler: inside the root component's box, and no inner
+         component contains it - so the root component is itself the innermost
+         target. It must not then be fanned out to a second time. */
+      Input.clickAt(handle, ~x=2, ~y=0);
+      Test.assertEqual(
+        List.length(rootComponentEvents^),
+        1,
+        "the root component receives it once, not twice",
+      );
+      Test.assertEqual(
+        List.length(innerSpyEvents^),
+        0,
+        "and the inner component, which does not contain it, not at all",
+      );
+      handle.quit();
+    });
+
+    Test.run("a stack-rooted app has no root component to fan out to", () => {
+      /* The path that already worked, and the one most easily broken by
+         mistaking "first component rendered" for "root component": with a
+         <VStack> root element the first component rendered is row zero, an
+         ordinary row. It must stay an ordinary row. */
+      rowClicks[0] = 0;
+      rowClicks[1] = 0;
+      let config: Runtime.headlessConfig = {width: 30, height: 8};
+      let handle = Runtime.startHeadless(~config, (module TwoRowsApp));
+
+      Input.clickAt(handle, ~x=3, ~y=1);
+      Test.assertEqual(rowClicks[1], 1, "the second row fired");
+      Test.assertEqual(
+        rowClicks[0],
+        0,
+        "the first component rendered is not a catch-all",
+      );
+
+      Input.clickAt(handle, ~x=3, ~y=6);
+      Test.assertEqual(
+        rowClicks[0],
+        0,
+        "and an event outside every box still reaches no row",
+      );
+      handle.quit();
+    });
+
+    Test.run("an open modal captures the root component too", () => {
+      modalRootEvents := [];
+      let config: Runtime.headlessConfig = {width: 30, height: 10};
+      let handle = Runtime.startHeadless(~config, (module ModalRootApp));
+
+      /* A release, not a Down: a Down outside an open layer is a dismissal
+         and is swallowed whole, which would make this test pass for the
+         wrong reason. */
+      handle.sendMouse(releaseAt(~x=0, ~y=9));
+      Test.assertEqual(
+        List.length(modalRootEvents^),
+        1,
+        "with nothing open the root component hears the event",
+      );
+
+      handle.sendKey(Key.Char('m'), Key.noModifiers);
+      Test.assertContains(handle.getOutput(true), "dialog", "the modal is open");
+
+      handle.sendMouse(releaseAt(~x=0, ~y=9));
+      Test.assertEqual(
+        List.length(modalRootEvents^),
+        1,
+        "the base application is not a member, so the layer captures it",
+      );
       handle.quit();
     });
 

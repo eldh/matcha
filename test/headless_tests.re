@@ -40,7 +40,175 @@ module ThemedApp = {
   };
 };
 
+/* Run a built example binary headlessly with a stdin pipe that is opened and
+ * then NEVER written to and NEVER closed - the shape of every caller that
+ * forgets `< /dev/null` - and report how the child ended.
+ *
+ * Returns (exited, code, elapsedSeconds). `exited` is false if the child had
+ * to be killed at the deadline, which is the regression this exists to
+ * catch. It polls with WNOHANG rather than blocking in waitpid, so a broken
+ * MATCHA_HEADLESS_MAX_MS FAILS this test instead of hanging the suite. */
+let runWithOpenStdin =
+    (~extraEnv: list(string), ~killAfter: float, name: string)
+    : (bool, int, float) => {
+  let relPath = "../examples/" ++ name ++ "/main.exe";
+  let path =
+    if (Sys.file_exists(relPath)) {
+      relPath;
+    } else {
+      "_build/default/examples/" ++ name ++ "/main.exe";
+    };
+
+  let (stdinRead, stdinWrite) = Unix.pipe();
+  Unix.set_close_on_exec(stdinWrite);
+  let devnull = Unix.openfile("/dev/null", [Unix.O_WRONLY], 0o644);
+
+  let pathEnv =
+    switch (Sys.getenv_opt("PATH")) {
+    | Some(p) => p
+    | None => "/usr/bin:/bin"
+    };
+  let env =
+    Array.append(
+      [|"PATH=" ++ pathEnv, "MATCHA_HEADLESS=1"|],
+      Array.of_list(extraEnv),
+    );
+
+  let started = Unix.gettimeofday();
+  let pid =
+    Unix.create_process_env(path, [|path|], env, stdinRead, devnull, devnull);
+  Unix.close(stdinRead);
+
+  /* Poll for the child, up to killAfter seconds. */
+  let result = ref(None);
+  while (result^ == None && Unix.gettimeofday() -. started < killAfter) {
+    switch (Unix.waitpid([Unix.WNOHANG], pid)) {
+    | (0, _) => ignore(Unix.select([], [], [], 0.02))
+    | (_, Unix.WEXITED(c)) => result := Some(c)
+    | (_, _) => result := Some(-1)
+    | exception _ => result := Some(-1)
+    };
+  };
+  let elapsed = Unix.gettimeofday() -. started;
+
+  /* The pipe's write end is what kept the child's stdin open; closing it
+     only now means the child never saw EOF while we were waiting. */
+  Unix.close(stdinWrite);
+  Unix.close(devnull);
+
+  switch (result^) {
+  | Some(c) => (true, c, elapsed)
+  | None =>
+    (try(Unix.kill(pid, Sys.sigkill)) {
+     | _ => ()
+     });
+    (try(ignore(Unix.waitpid([], pid))) {
+     | _ => ()
+     });
+    (false, -1, elapsed);
+  };
+};
+
 let run = () => {
+  /* An INLINE app must be SHORTER than the terminal: the live region is
+     painted at the cursor, so a frame with as many rows as the terminal
+     scrolls the user's prompt and scrollback away, and nothing can un-scroll
+     a terminal. Runtime.inlineFrameTooTall holds that whole decision, and is
+     pure so the boundary can be checked without a terminal. The end-to-end
+     half - a real binary on a real pty refusing to paint, and the same
+     binary one row shorter painting normally - is in test/pty_tests.re. */
+  Test.group("Runtime: inline frame height guard", () => {
+    Test.run("one row short of the terminal is allowed", () => {
+      Test.assertFalse(
+        Runtime.inlineFrameTooTall(~frameHeight=29, ~termHeight=30),
+        "a 29-row frame fits above the cursor on a 30-row terminal",
+      );
+    });
+
+    Test.run("EQUAL is already too tall", () => {
+      /* The boundary the rule turns on: a frame that exactly fills the
+         terminal still scrolls it, because the region's last line is at the
+         cursor and the cursor is not at row 1. */
+      Test.assertTrue(
+        Runtime.inlineFrameTooTall(~frameHeight=30, ~termHeight=30),
+        "a 30-row frame on a 30-row terminal must be refused",
+      );
+    });
+
+    Test.run("taller than the terminal is too tall", () => {
+      Test.assertTrue(
+        Runtime.inlineFrameTooTall(~frameHeight=31, ~termHeight=30),
+        "a 31-row frame on a 30-row terminal must be refused",
+      );
+    });
+
+    Test.run("a terminal height we do not have never refuses", () => {
+      /* A failed ioctl must not become a crash: with no trustworthy height
+         there is no evidence the frame is too tall. */
+      Test.assertFalse(
+        Runtime.inlineFrameTooTall(~frameHeight=40, ~termHeight=0),
+        "termHeight 0 (unknown size) allows any frame",
+      );
+      Test.assertFalse(
+        Runtime.inlineFrameTooTall(~frameHeight=40, ~termHeight=-1),
+        "a negative termHeight allows any frame too",
+      );
+    });
+
+    Test.run("an empty frame is never too tall", () => {
+      Test.assertFalse(
+        Runtime.inlineFrameTooTall(~frameHeight=0, ~termHeight=30),
+        "zero rows fit anywhere",
+      );
+    });
+  });
+
+  /* The headless stream loop reads stdin until EOF, so a caller that hands
+     it a pipe nobody ever closes hangs forever - the hazard behind every
+     `timeout N ... < /dev/null` in the docs. MATCHA_HEADLESS_MAX_MS bounds
+     the loop by wall clock instead.
+
+     Spawned rather than run in-process: the loop owns stdin and exits the
+     process, so there is nothing in-process to call. The FIRST case is what
+     makes the second one mean something - it shows the hang is real and that
+     the harness would notice it. */
+  Test.group("Runtime: MATCHA_HEADLESS_MAX_MS bounds the headless loop", () => {
+    Test.run("without it, a pipe that never closes runs forever", () => {
+      let (exited, _, _) =
+        runWithOpenStdin(
+          ~extraEnv=["MATCHA_WIDTH=100", "MATCHA_HEIGHT=20"],
+          ~killAfter=1.0,
+          "counter",
+        );
+      Test.assertFalse(
+        exited,
+        "the unbounded loop is still running after 1s - if this ever passes, "
+        ++ "the bounded case below has stopped proving anything",
+      );
+    });
+
+    Test.run("with it, the loop leaves cleanly on its own", () => {
+      let (exited, code, elapsed) =
+        runWithOpenStdin(
+          ~extraEnv=[
+            "MATCHA_WIDTH=100",
+            "MATCHA_HEIGHT=20",
+            "MATCHA_HEADLESS_MAX_MS=300",
+          ],
+          ~killAfter=6.0,
+          "counter",
+        );
+      Test.assertTrue(exited, "the bounded loop exited on its own");
+      Test.assertEqual(code, 0, "and exited cleanly");
+      Test.assertTrue(
+        elapsed < 3.0,
+        "a 300ms budget must not take seconds (took "
+        ++ string_of_float(elapsed)
+        ++ "s)",
+      );
+    });
+  });
+
   Test.group("Runtime: OSC 11 payload parsing", () => {
     Test.run("xterm's rgb: form scales by DIGIT COUNT, not by magnitude", () => {
       /* The whole hazard: "1e1e" is 0x1e, not 0x1e1e. The digit count is the

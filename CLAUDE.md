@@ -143,11 +143,14 @@ underlying unused code instead.
 `Runtime.start` puts the terminal in raw mode and blocks waiting for a real
 TTY/keyboard — it will hang the calling process/agent indefinitely.
 
-**HANG TRAP: even in headless mode, the process blocks until stdin EOF.**
-`MATCHA_HEADLESS=1 dune exec ...` alone will still hang if stdin is not
-closed or redirected. Always combine `timeout N`, `MATCHA_HEADLESS=1`, and
-`< /dev/null` (or a pipe that eventually closes) together, exactly as in the
-verification-loop command above.
+**HANG TRAP: even in headless mode, the process blocks until stdin EOF —
+unless stdin is a terminal.** Since 0.3.0 the headless loop renders one
+frame and exits when `Unix.isatty(stdin)`, because nothing scripted is
+coming, and `MATCHA_HEADLESS_MAX_MS=<n>` bounds the loop regardless. Neither
+helps the case that actually bites an agent, whose stdin is usually a pipe
+someone forgot to close, so keep combining `timeout N`,
+`MATCHA_HEADLESS=1`, and `< /dev/null` (or a pipe that eventually closes)
+exactly as in the verification-loop command above.
 
 **The ONE exception is `test/pty.re`**, which runs a binary on a real pty
 *without* `MATCHA_HEADLESS` on purpose — that is the whole point of the
@@ -276,6 +279,13 @@ session outside `withSession`, and never wait on a child with a bare sleep.
   `examples/command-menu`. Pinned by a PTY pair — the fullscreen case
   asserts no inline region erase ever appears, and the chat case asserts the
   same detector *does* fire, so the guard cannot pass vacuously.
+  **Since 0.3.0 this is enforced**: `Runtime.inlineFrameTooTall` gates the
+  Inline paint arm and raises `Invalid_argument` before the first offending
+  frame reaches the terminal. Turning the rule on immediately caught four
+  shipped examples — `scroll-demo`, `people-list`, `layout-demo` and
+  `layout-alignment` — all of which had been scrolling the user's prompt
+  away at 80x24 since they were written. They are `Fullscreen` now. Headless
+  ignores `~screen`, which is why no golden moved.
 - **The interactive loop renders INLINE by default; `quit(ClearScreen)`
   erases only the live region.** In `Inline` mode there is no
   `ESC[2J`/alt-screen: the app paints at the current cursor position via

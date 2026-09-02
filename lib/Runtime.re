@@ -13,6 +13,34 @@
  *   Runtime.start((module MyApp));
  *
  * ============================================================================
+ * TWO REFUSALS
+ * ============================================================================
+ *
+ * INLINE WILL NOT PAINT A FRAME AS TALL AS THE TERMINAL
+ * ----------------------------------------------------
+ * [start(~screen=Inline, ...)] paints at the cursor, so a frame with as many
+ * rows as the terminal scrolls the user's prompt and scrollback away, and
+ * nothing can un-scroll a terminal. The first frame with
+ * frameHeight >= termHeight raises Invalid_argument naming the fix
+ * (~screen=Fullscreen) instead of painting it - see [inlineFrameTooTall],
+ * which is pure and holds the whole decision. Fullscreen owns the viewport
+ * legitimately and is unaffected; so is every headless path, which paints
+ * nothing and scrolls nothing.
+ *
+ * HEADLESS WILL NOT WAIT FOR INPUT THAT IS NOT COMING
+ * ---------------------------------------------------
+ * The MATCHA_HEADLESS=1 stream loop reads stdin until EOF, which is right for
+ * piped input and a hang for anything else. Two escape hatches, both of which
+ * leave the piped path byte-identical:
+ *   - stdin is a TTY: nothing scripted can arrive, so render one frame, print
+ *     it, and return. This is the "show me what this looks like" run.
+ *   - MATCHA_HEADLESS_MAX_MS=<n>: leave cleanly after n milliseconds of
+ *     wall-clock (Unix.gettimeofday, never the headless virtual clock),
+ *     whatever stdin is doing. It is an escape hatch for scripts that cannot
+ *     close the pipe they hand us - NOT a substitute for closing stdin, which
+ *     remains how a headless run is supposed to end.
+ *
+ * ============================================================================
  * THE RENDER MODEL
  * ============================================================================
  *
@@ -2487,9 +2515,6 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
     Hooks.unmountAll();
   });
 
-  /* Set stdin to non-blocking for headless input */
-  Unix.set_nonblock(Unix.stdin);
-
   /* Fresh decoder for this loop (see InputDecoder.re): reassembles raw
      reads into KeyEvents/PasteEvents/MouseEvents/CursorReports across
      however many reads a paste, a UTF-8 codepoint or a mouse report
@@ -2582,42 +2607,93 @@ let startHeadlessLoop = (module C: HooksComponent, config: headlessConfig) => {
     };
   };
 
-  /* Main loop */
-  while (running^) {
-    if (ctx.needsRerender) {
-      ctx.needsRerender = false;
-      renderFrame();
-    };
+  /* STDIN IS A TERMINAL: render one frame and leave (see the module header).
+     Under MATCHA_HEADLESS=1 nothing scripted is coming - a human ran the
+     binary to look at it - so the loop below would block on a select that
+     only a keystroke or a Ctrl+D can end, which is the hang every documented
+     invocation works around with `< /dev/null`. One frame, printed, exit 0.
 
-    /* Try to read input from stdin (non-blocking). The timeout is capped at
-       0.1s but shortened to 25ms when the decoder is mid-escape-sequence
-       (a lone ESC waiting to see if more follows), and further shortened
-       when a timer (useInterval/useTimeout) is due sooner, so the loop
-       wakes up in time to fire it either way. */
-    let cap = InputDecoder.pendingEsc(decoder) ? 0.025 : 0.1;
-    let (ready, _, _) =
-      try(Unix.select([Unix.stdin], [], [], Hooks.nextTimerTimeout(~cap))) {
-      | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], [])
+     This branch also deliberately never calls Unix.set_nonblock(Unix.stdin):
+     O_NONBLOCK lives on the open file description, which a terminal shares
+     with the parent shell, so setting it here would outlive the process and
+     break the shell that ran us. The piped branch keeps setting it, exactly
+     as before. */
+  if (Unix.isatty(Unix.stdin)) {
+    ctx.needsRerender = false;
+    renderFrame();
+  } else {
+    /* Set stdin to non-blocking for headless input */
+    Unix.set_nonblock(Unix.stdin);
+
+    /* MATCHA_HEADLESS_MAX_MS: a wall-clock budget for the whole loop, in
+       milliseconds. Unset or non-positive (the default) means None, and then
+       every expression below is exactly what it was before this existed - the
+       piped path is byte-identical, which is what keeps the goldens valid.
+       Read through Unix.gettimeofday, never Hooks.instanceState.now: the
+       headless virtual clock is advanced by tests at will and must not be
+       able to shorten or extend a real-time budget. */
+    let maxMs = getEnvInt("MATCHA_HEADLESS_MAX_MS", 0);
+    let deadline =
+      if (maxMs > 0) {
+        Some(Unix.gettimeofday() +. float_of_int(maxMs) /. 1000.0);
+      } else {
+        None;
+      };
+    let deadlinePassed = () =>
+      switch (deadline) {
+      | None => false
+      | Some(t) => Unix.gettimeofday() >= t
       };
 
-    if (List.mem(Unix.stdin, ready)) {
-      switch (Terminal.readBytes()) {
-      | Some((buf, n)) =>
-        deliverAll(~flushDirty, ctx, InputDecoder.feed(decoder, buf, n))
-      | None =>
-        /* EOF on stdin - exit gracefully */
-        running := false
+    /* Main loop */
+    while (running^ && !deadlinePassed()) {
+      if (ctx.needsRerender) {
+        ctx.needsRerender = false;
+        renderFrame();
       };
-    } else if (InputDecoder.pendingEsc(decoder)) {
-      /* Nothing arrived within the shortened deadline: the held ESC was a
-         keypress on its own, not the start of a longer sequence. */
-      deliverAll(~flushDirty, ctx, InputDecoder.flush(decoder));
-    };
 
-    /* Fire any timers (useInterval/useTimeout) whose deadline has passed.
-       Callbacks run like key handlers, outside of render; setState inside
-       one just marks needsRerender for the next loop iteration. */
-    Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
+      /* Try to read input from stdin (non-blocking). The timeout is capped at
+         0.1s but shortened to 25ms when the decoder is mid-escape-sequence
+         (a lone ESC waiting to see if more follows), and further shortened
+         when a timer (useInterval/useTimeout) is due sooner, so the loop
+         wakes up in time to fire it either way. */
+      let cap = InputDecoder.pendingEsc(decoder) ? 0.025 : 0.1;
+      /* ...and shortened once more by whatever is left of the wall-clock
+         budget, so an idle loop leaves within a select tick of it rather than
+         up to a full cap late. Identity when there is no deadline. */
+      let timeout =
+        switch (deadline) {
+        | None => Hooks.nextTimerTimeout(~cap)
+        | Some(t) =>
+          min(
+            Hooks.nextTimerTimeout(~cap),
+            max(0.0, t -. Unix.gettimeofday()),
+          )
+        };
+      let (ready, _, _) =
+        try(Unix.select([Unix.stdin], [], [], timeout)) {
+        | Unix.Unix_error(Unix.EINTR, _, _) => ([], [], [])
+        };
+
+      if (List.mem(Unix.stdin, ready)) {
+        switch (Terminal.readBytes()) {
+        | Some((buf, n)) =>
+          deliverAll(~flushDirty, ctx, InputDecoder.feed(decoder, buf, n))
+        | None =>
+          /* EOF on stdin - exit gracefully */
+          running := false
+        };
+      } else if (InputDecoder.pendingEsc(decoder)) {
+        /* Nothing arrived within the shortened deadline: the held ESC was a
+           keypress on its own, not the start of a longer sequence. */
+        deliverAll(~flushDirty, ctx, InputDecoder.flush(decoder));
+      };
+
+      /* Fire any timers (useInterval/useTimeout) whose deadline has passed.
+         Callbacks run like key handlers, outside of render; setState inside
+         one just marks needsRerender for the next loop iteration. */
+      Perf.span("timers", () => ignore(Hooks.fireDueTimers()));
+    };
   };
 };
 
@@ -2645,6 +2721,45 @@ let dsrQuery = "\027[6n";
 type screenMode =
   | Inline
   | Fullscreen;
+
+/* Is this frame too tall to be painted INLINE on a terminal this tall?
+ *
+ * An inline app must be SHORTER than the terminal. Inline paints the live
+ * region at the cursor, so a frame with as many rows as the terminal has
+ * forces the terminal to SCROLL to make room, pushing the user's prompt and
+ * scrollback up and away. Quitting erases the region correctly, but nothing
+ * can un-scroll a terminal: the user is left with a screenful of blank rows
+ * between their last command and the next prompt. examples/command-menu
+ * shipped exactly that until a user hit it; it is Fullscreen now.
+ *
+ * EQUAL IS ALREADY TOO TALL - hence >=, not >. The live region's last line
+ * sits at the cursor's row, which is at the BOTTOM of the screen for an app
+ * started from a shell prompt, so painting termHeight rows there scrolls by
+ * termHeight - 1. Only a frame strictly shorter than the terminal can be
+ * guaranteed to fit wherever the cursor happens to be.
+ *
+ * A non-positive termHeight is never "too tall": that is a terminal whose
+ * size could not be determined, and refusing to paint on the strength of a
+ * number we do not have would turn a missing ioctl into a crash. Pure, so
+ * the boundary can be tested without a terminal (see test/headless_tests.re).
+ */
+let inlineFrameTooTall = (~frameHeight: int, ~termHeight: int): bool =>
+  termHeight > 0 && frameHeight >= termHeight;
+
+/* The message [inlineFrameTooTall] raises with. Names what happened, why it
+ * is wrong and what to do instead - the same shape as the <Static>-under-
+ * Fullscreen rejection in Hooks.requireStaticAllowed. */
+let inlineTooTallMessage = (~frameHeight: int, ~termHeight: int): string =>
+  "Inline screen mode cannot paint a frame as tall as the terminal: this "
+  ++ "frame is "
+  ++ string_of_int(frameHeight)
+  ++ " rows and the terminal is "
+  ++ string_of_int(termHeight)
+  ++ ". Painting it at the cursor scrolls the terminal, pushing the user's "
+  ++ "prompt and scrollback away for good - erasing the live region on quit "
+  ++ "cannot bring them back. Use Runtime.start(~screen=Fullscreen, ...) for "
+  ++ "an app that fills the screen (see examples/claude-code), or make the "
+  ++ "root frame shorter than the terminal (see examples/chat).";
 
 /* Start the application with the given root component.
  *
@@ -2949,14 +3064,30 @@ let start = (~screen: screenMode=Inline, module C: HooksComponent) => {
           prevFrame := Some(next);
           prevHeight := Array.length(next);
         | Inline =>
+          let painted = Array.of_list(Element.splitLines(output));
+          /* Refuse a frame that does not fit ABOVE the cursor (see
+           * inlineFrameTooTall). Checked before the patch is even built, so
+           * the scroll this prevents never happens once and then complains -
+           * the first offending frame raises instead of painting. The raise
+           * escapes `start`; the at_exit handler installed above still runs
+           * the effect cleanups and restores the terminal. */
+          if (inlineFrameTooTall(
+                ~frameHeight=Array.length(painted),
+                ~termHeight,
+              )) {
+            raise(
+              Invalid_argument(
+                inlineTooTallMessage(
+                  ~frameHeight=Array.length(painted),
+                  ~termHeight,
+                ),
+              ),
+            );
+          };
           /* Store what was PAINTED, not what was rendered: the patch works
            * against the clamped frame, so the next diff has to compare
            * against the same thing. */
-          let next =
-            LiveRegion.normalize(
-              ~next=Array.of_list(Element.splitLines(output)),
-              ~termHeight,
-            );
+          let next = LiveRegion.normalize(~next=painted, ~termHeight);
           let patch =
             LiveRegion.patch(
               ~prev=prevFrame^,

@@ -66,9 +66,14 @@ back for.
 mode paints at the cursor, so a frame as tall as the terminal forces it to
 *scroll*, pushing the user's prompt and history up and away. Quitting erases
 the region correctly, but nothing can un-scroll a terminal, and the user is
-left with a screenful of blank rows. `examples/command-menu` shipped this
-way and a real user hit it. Under Fullscreen, `<Static>` and `useStdout`
-**raise** - there is no scrollback to commit to - so keep messages in state.
+left with a screenful of blank rows.
+
+Since 0.3.0 matcha **refuses to paint that frame at all**: an Inline frame
+at or above the terminal height raises `Invalid_argument` naming
+`~screen=Fullscreen`, before painting, so the damage never happens once.
+You will meet this as a crash on first run rather than as a puzzle later.
+Under Fullscreen, `<Static>` and `useStdout` **raise** in their turn - there
+is no scrollback to commit to - so keep messages in state.
 
 **2. Bind Ctrl+C with `useKeyDown`, never `useInput`.** Raw mode disables
 ISIG, so Ctrl+C is an ordinary keypress that only your app can act on. And
@@ -77,26 +82,32 @@ ISIG, so Ctrl+C is an ordinary keypress that only your app can act on. And
 app cannot be quit at all. It surfaces as an exit reported `Signaled(2)`.
 Test it: send `\003` with a modal open and assert `isRunning() == false`.
 
-**3. Every `useMemo` dependency must be an immediate through `Obj.repr`.**
-Dependencies are compared by **physical** equality. A tuple, record, array
-or built string is a fresh block every render, so the comparison never
-matches and the memo recomputes every frame - silently reintroducing exactly
-the cost it was added to remove. Ints and bools only.
+**3. `useMemo` dependencies are compared by identity, not by structure.**
+Since 0.3.0 the exceptions are **immediates and strings**: ints, bools,
+chars, constant constructors and equal strings all compare equal, so
+`[|Obj.repr(query)|]` does what you expect.
 
-When the thing you actually depend on is a string or a record, keep a
-**generation counter beside it in one state cell** and depend on the
+Everything else - a tuple, record, variant, option, array or list - is a
+fresh block every render, so the comparison never matches and the memo
+recomputes every frame, silently reintroducing exactly the cost it was
+added to remove. Nothing more can be added safely: `compare` raises on a
+closure, and *loops forever* on a cyclic structure, which would turn a slow
+memo into a hang.
+
+So when the thing you depend on is a record, a variant or an `option`, keep
+a **generation counter beside it in one state cell** and depend on the
 counter:
 
 ```reason
-let (queryState, setQueryState) = Hooks.useState((0, ""));
-let (gen, query) = queryState;
+let (viewState, setViewState) = Hooks.useState((0, Landing));
+let (viewGen, view) = viewState;
 /* ... */
-let visible = Hooks.useMemo(() => filter(entries, query), [|Obj.repr(gen)|]);
+let entries = Hooks.useMemo(() => load(view), [|Obj.repr(viewGen)|]);
 ```
 
 One cell, not two: holding the counter separately lets a frame read a new
-counter against an old value. See `hog/lib/HogApp.re` and
-`bdiff/lib/BdiffApp.re`, which both do this for their filter query.
+counter against an old value. `hog/lib/HogApp.re` does this for its scope,
+its selection and its ignore rules — all three are blocks.
 
 **4. `<ScrollView rows>` strings must be style-self-contained.** The
 renderer starts painting at row N without reading rows 0..N-1, so every row
@@ -112,10 +123,16 @@ a newline turns one row into two and desynchronises the list from its own
 offsets. Both are legal filenames. `hog/lib/Rows.re` maps bytes below `0x20`
 and `0x7f` to `?`.
 
-**5. Never run the binary without `timeout`, `MATCHA_HEADLESS=1` and closed
-stdin - all three.** Without the second it puts the terminal in raw mode and
-blocks on a TTY forever. Without the third it blocks on stdin forever, even
-headless. Missing either hangs the agent, not just the app.
+**5. Always run the binary under `MATCHA_HEADLESS=1`.** Without it, the app
+puts the terminal in raw mode and blocks waiting for a real keyboard - which
+hangs the agent, not just the app.
+
+Headless mode reads stdin until EOF, so **how you end stdin is the second
+half of the problem**. Since 0.3.0 matcha closes two of the three holes
+itself: if stdin is a terminal it renders one frame and exits, and
+`MATCHA_HEADLESS_MAX_MS` bounds the loop whatever stdin is doing. The
+belt-and-braces invocation is still worth typing, because an agent's stdin
+is usually a pipe rather than a terminal:
 
 ```
 timeout 20 env MATCHA_HEADLESS=1 MATCHA_WIDTH=140 MATCHA_HEIGHT=40 \
@@ -123,29 +140,41 @@ timeout 20 env MATCHA_HEADLESS=1 MATCHA_WIDTH=140 MATCHA_HEIGHT=40 \
 ```
 
 To drive it, pipe bytes that eventually end: `(sleep 3; printf 'jjq') | ...`.
+To let it run and stop on its own, `MATCHA_HEADLESS_MAX_MS=3000`.
 
-## Is your root a `[@component]`?
+## Routing clicks yourself
 
-Usually yes. But **if you route mouse clicks yourself from a root
-`useMouse`, it must not be.**
+In `~rows` mode a `<ScrollView>` has **no child elements**, so there is
+nothing inside the list to click. You route clicks from a `useMouse` on the
+component that holds the list, and do the arithmetic:
 
-`Hooks.dispatchMouse` ends with an unconditional fan-out to the **root
-context's** mouse handlers. `Runtime` runs the component you hand it inside
-the root context - so a bare `make` *is* the root. Wrap it in `[@component]`
-and it gets its own child context instead, at which point a `<ScrollView>`,
-which registers `useMouse` for the wheel, becomes the innermost mouse target
-over your list and swallows every click. Click-to-select then silently never
-fires, with no error anywhere.
+```reason
+Hooks.useMouse(~wheel=false, ev =>
+  switch (ev.Mouse.kind, ev.Mouse.button) {
+  | (Mouse.Down, Mouse.Left) =>
+    let row = ev.Mouse.y - listTop;
+    if (row >= 0 && row < listH) { select(offset + row) };
+  | _ => ()
+  });
+```
 
-- `bdiff/lib/BdiffApp.re` uses `[@component] Root` and is fine: its rows are
-  `<Clickable>` child components, which are hit-tested normally.
-- `hog/lib/HogApp.re` puts the body directly in the module, because its list
-  is `~rows` mode and therefore has **no child elements at all** to click -
-  so it does the arithmetic itself (`row = ev.y - listTop`, `i = offset + row`).
+**`~wheel=false` is load-bearing**: without it your handler declares wheel
+interest, becomes the innermost wheel target, and eats the notch that should
+have reached the `ScrollView`.
 
-If you take that second path, also pass `~wheel=false` to the root
-`useMouse`, or the root declares wheel interest and eats the notch that
-should have reached the `ScrollView`.
+Two things used to make this harder and no longer do, both fixed in 0.3.0.
+`<ScrollView>` used to claim every click while acting only on the wheel, so
+clicks on a rows-mode list vanished silently; it now declares `~click=false`
+and is transparent to them. And a `[@component]` root no longer loses those
+clicks as a result.
+
+One asymmetry remains, and it is worth knowing rather than discovering: a
+**bare `make` root is the root context**, which is guaranteed every mouse
+event whatever the hit test decided, while a **`[@component]` root is an
+ordinary component** subject to innermost-wins. If an inner component claims
+the click, a component root does not also see it. That only matters if you
+want a whole-frame observer *and* inner click targets at once — in which
+case keep the root bare, as `hog/lib/HogApp.re` does.
 
 ## Selection, scope and identity
 

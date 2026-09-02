@@ -3,6 +3,60 @@
 All notable changes to Matcha are recorded here. Versions follow semantic
 versioning, with the 0.x caveat that a minor bump may break the API.
 
+## 0.3.0 — 2026-09-02
+
+Four traps that application authors kept falling into, turned into
+behaviour the framework enforces or removes. A minor bump rather than a
+patch: one of them makes a program that "worked" raise instead.
+
+### Breaking
+
+- **An Inline frame as tall as the terminal now raises `Invalid_argument`**
+  instead of painting. Inline mode paints at the cursor, so such a frame
+  forces the terminal to scroll, pushing the user's prompt and scrollback
+  away permanently — nothing can un-scroll a terminal. The message names
+  the fix (`Runtime.start(~screen=Fullscreen, ...)`), and the check runs
+  before the first offending frame reaches the terminal rather than after
+  the damage. `Runtime.inlineFrameTooTall` is the pure predicate behind it.
+
+  Turning this on immediately caught four of matcha's own examples —
+  `scroll-demo`, `people-list`, `layout-demo` and `layout-alignment` — all
+  of which had been doing this at 80x24 since they were written. They are
+  `Fullscreen` now. Headless ignores `~screen`, which is why no golden
+  moved and why nothing had ever noticed.
+
+### Fixed
+
+- **`useMemo` and `useEffect` now treat equal strings as equal
+  dependencies.** They were compared physically, so a string dependency —
+  a fresh block every render — never matched, and every memo holding one
+  recomputed on every frame while appearing to be memoized. Immediates
+  already worked. Nothing further is compared structurally, deliberately:
+  `compare` raises on a closure and loops forever on a cyclic structure,
+  so widening this would trade a slow memo for a hang.
+
+- **`<ScrollView>` no longer swallows clicks.** Its mouse handler acts on
+  the wheel and ignores everything else, but registering it made the
+  ScrollView a hit-test target for clicks too — so a click on a `~rows`
+  list, which has no child elements to hit, was consumed and dropped with
+  no error anywhere. `Hooks.useMouse` gains **`~click`** (default `true`),
+  the mirror of the existing `~wheel`, and `<ScrollView>` passes
+  `~click=false`.
+
+### Added
+
+- **`MATCHA_HEADLESS_MAX_MS`** bounds the headless loop by wall-clock,
+  whatever stdin is doing. And under `MATCHA_HEADLESS=1`, a stdin that is a
+  **terminal** now renders one frame and exits rather than blocking on
+  input that is never coming. Both make the documented
+  `timeout` + `MATCHA_HEADLESS=1` + `< /dev/null` invocation harder to get
+  wrong; neither replaces it when stdin is a pipe.
+
+- **A `matcha-app` Claude Code skill**, distributed from this repository as
+  a plugin marketplace (`.claude-plugin/marketplace.json`). It teaches
+  building an application on matcha, and consumers can opt in per project
+  from their own `.claude/settings.json` — see the README.
+
 ## 0.2.0 — 2026-09-01
 
 The first release with a pinned public interface. `lib/Matcha.rei` now

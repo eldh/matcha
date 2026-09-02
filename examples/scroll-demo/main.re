@@ -64,4 +64,4 @@ module App = {
   let make = make;
 };
 
-let () = Runtime.start((module App));
+let () = Runtime.start(~screen=Fullscreen, (module App));

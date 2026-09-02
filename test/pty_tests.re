@@ -28,6 +28,7 @@
 let chatBin = "examples/chat/main.exe";
 let ccBin = "examples/claude-code/main.exe";
 let cmBin = "examples/command-menu/main.exe";
+let counterBin = "examples/counter/main.exe";
 
 /* Does the byte log contain an INLINE live-region erase - a relative
    cursor-up (ESC[<n>A) immediately followed by erase-below (ESC[0J)?
@@ -590,5 +591,63 @@ let run = () => {
           audit(chatBin, "chat");
           audit(ccBin, "claude-code");
         });
+  });
+
+  /* An INLINE app must be SHORTER than the terminal (see
+     Runtime.inlineFrameTooTall). This is the end-to-end half of that guard:
+     the unit boundary cases live in test/headless_tests.re, and only here is
+     there a terminal with a height for a real binary to be measured against.
+
+     counter is used because its frame is a fixed 11 rows at every terminal
+     size - so a terminal 11 rows tall is the exact boundary, and 12 rows is
+     one row clear of it. No fixture binary was added for this. If counter's
+     height ever changes, the first case stops seeing the refusal and FAILS;
+     it cannot quietly become vacuous. */
+  Test.group("PTY: an inline app as tall as the terminal is refused", () => {
+    Test.run("frame height == terminal height raises before painting", () => {
+      Pty.withSession(~width=70, ~height=11, counterBin, [], s => {
+        let st = Pty.waitExit(~timeoutMs=6000, s);
+        let log = Pty.byteLog(s);
+        Test.assertContains(
+          log,
+          "Runtime.start(~screen=Fullscreen",
+          "the refusal names the fix",
+        );
+        /* The point of raising on the FIRST offending frame: the scroll this
+           prevents must never happen once and then be complained about. */
+        Test.assertFalse(
+          Test.contains(log, "Counter Example"),
+          "not one row of the oversized frame was painted",
+        );
+        Test.assertFalse(
+          hasInlineRegionErase(log),
+          "and there was no live region to erase",
+        );
+        switch (st) {
+        | Pty.Exited(2) => ()
+        | other =>
+          Test.assertTrue(
+            false,
+            "expected Exited(2) (uncaught Invalid_argument), got "
+            ++ Pty.exitStatusToString(other),
+          )
+        };
+      })
+    });
+
+    Test.run("one row shorter paints and quits normally", () => {
+      /* The guard is >=, not >, so this is the case that proves it does not
+         simply refuse everything. */
+      Pty.withSession(~width=70, ~height=12, counterBin, [], s => {
+        Pty.drain(~quietMs=250, ~timeoutMs=5000, s);
+        Test.assertContains(
+          Pty.screen(s),
+          "Counter Example",
+          "an 11-row frame on a 12-row terminal paints",
+        );
+        Pty.send(s, "q");
+        assertExitedCleanly(Pty.waitExit(~timeoutMs=6000, s), "counter quit");
+      })
+    });
   });
 };

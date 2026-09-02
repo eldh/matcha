@@ -158,6 +158,21 @@ type renderContext = {
      swallowed - the reason <Clickable> rows inside a list still scroll.
      Reset alongside mouseHandlers every render. */
   mutable wheelInterest: bool,
+  /* The mirror of wheelInterest, for everything that is NOT the wheel
+     (Down/Up/Move). A context without click interest is transparent to a
+     click: dispatchMouse skips it when picking a target, so the click falls
+     through to whatever encloses it.
+
+     <ScrollView> declares exactly this. Its useMouse body handles the wheel
+     and ignores every other event - yet without this flag it still WON the
+     hit test for clicks, because registering any handler made it a target.
+     A list rendered in ~rows mode has no child elements at all, so a click
+     on it reached the ScrollView, was dropped on the floor, and never
+     reached the application. That was a silent failure with no error
+     anywhere, and it cost a real debugging session.
+
+     Reset alongside mouseHandlers every render. */
+  mutable clickInterest: bool,
   mutable pendingEffects: list(pendingEffect), /* Effects to run post-render */
   /* Whether a new frame is wanted. Only the ROOT context's flag is read: it is
      what the main loops (and headless sendKey) poll to decide whether to draw
@@ -673,6 +688,36 @@ let useRef = (initial: 'a): ref('a) => {
   };
 };
 
+/* Is this Obj.t a string block? (internal)
+ *
+ * Obj.string_tag is the runtime tag OCaml gives every string block; an
+ * immediate (int/bool/char/constant constructor) is not a block at all, so
+ * the is_block guard has to come first - Obj.tag on an immediate is
+ * meaningless. */
+let isString = (o: Obj.t): bool =>
+  Obj.is_block(o) && Obj.tag(o) === Obj.string_tag;
+
+/* Compare one dependency slot. (internal)
+ *
+ * Two immediates that are equal are already physically equal, so the
+ * `===` below covers ints, bools, chars and constant constructors. The one
+ * case it misses is a STRING: a fresh block every render, so a string
+ * dependency never matched and every memo holding one recomputed forever.
+ * Strings are safe to compare structurally - they cannot contain a closure,
+ * so `compare` cannot raise, and they cannot be cyclic, so it cannot hang.
+ * Nothing else is added for exactly those two reasons.
+ *
+ * In particular: do NOT wrap `compare` in a `try` to "handle" the rest. A
+ * `try` catches the Invalid_argument("compare: functional value") a closure
+ * raises, but a CYCLIC structure does not raise - it loops forever. That
+ * turns a silently-slow memo into a hang, which is a strictly worse failure
+ * mode than the one being fixed here. */
+let depEqual = (a: Obj.t, b: Obj.t): bool =>
+  a === b
+  || isString(a)
+  && isString(b)
+  && String.equal((Obj.obj(a): string), (Obj.obj(b): string));
+
 /** Compare dependency arrays for changes (internal) */
 let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
   switch (prev) {
@@ -683,8 +728,9 @@ let depsEqual = (prev: option(array(Obj.t)), curr: array(Obj.t)): bool => {
     } else {
       let equal = ref(true);
       for (i in 0 to Array.length(prevDeps) - 1) {
-        /* Use !== (physical inequality) to avoid calling compare on functional values */
-        if (prevDeps[i] !== curr[i]) {
+        /* depEqual is physical equality plus the one string case - see its
+           comment for why nothing else may be added here. */
+        if (!depEqual(prevDeps[i], curr[i])) {
           equal := false;
         };
       };
@@ -882,6 +928,14 @@ let useKeyDown = (handler: (Key.t, Key.modifiers) => unit): unit => {
  * instead of stopping here. <Clickable> without ~onMouseDown does exactly
  * that, which is why a list of clickable rows still wheel-scrolls.
  *
+ * ~click (default true) is the mirror, for Down/Up/Move. Pass ~click=false
+ * to receive the wheel without claiming clicks, which is what <ScrollView>
+ * does: it scrolls on a notch and is transparent to everything else, so a
+ * click on a list lands on whatever the application put there - or, in
+ * ~rows mode where there are no child elements at all, on the application
+ * itself. Declaring interest you do not act on is how a component swallows
+ * events silently.
+ *
  * Example:
  *   Hooks.useMouse(ev =>
  *     switch (ev.Mouse.kind, ev.Mouse.button) {
@@ -890,11 +944,15 @@ let useKeyDown = (handler: (Key.t, Key.modifiers) => unit): unit => {
  *     }
  *   );
  */
-let useMouse = (~wheel: bool=true, handler: Mouse.event => unit): unit => {
+let useMouse =
+    (~wheel: bool=true, ~click: bool=true, handler: Mouse.event => unit): unit => {
   let ctx = getContext();
   ctx.mouseHandlers = [handler, ...ctx.mouseHandlers];
   if (wheel) {
     ctx.wheelInterest = true;
+  };
+  if (click) {
+    ctx.clickInterest = true;
   };
 };
 
@@ -1397,6 +1455,7 @@ let createContext = (quit: quitBehavior => unit): renderContext => {
     inputHandlers: [],
     mouseHandlers: [],
     wheelInterest: false,
+    clickInterest: false,
     pendingEffects: [],
     needsRerender: true,
     componentId: None, /* Root context has no component ID */
@@ -1417,6 +1476,7 @@ let createComponentContext =
     inputHandlers: [],
     mouseHandlers: [],
     wheelInterest: false,
+    clickInterest: false,
     pendingEffects: [],
     needsRerender: true,
     componentId: Some(componentId),
@@ -1440,6 +1500,7 @@ let beginRender = (ctx: renderContext): unit => {
   ctx.inputHandlers = [];
   ctx.mouseHandlers = [];
   ctx.wheelInterest = false;
+  ctx.clickInterest = false;
   ctx.pendingEffects = [];
 };
 
@@ -1611,7 +1672,7 @@ let dispatchMouse = (rootCtx: renderContext, ev: Mouse.event): unit => {
           switch (ctx.mouseHandlers) {
           | [] => ()
           | _ =>
-            if ((!isWheel || ctx.wheelInterest)
+            if ((isWheel ? ctx.wheelInterest : ctx.clickInterest)
                 && Mouse.contains(rect, ev.Mouse.x, ev.Mouse.y)) {
               target := Some((ctx, rect));
             }
@@ -1898,6 +1959,7 @@ let unmountAll = (): unit => {
     rootCtx.inputHandlers = [];
     rootCtx.mouseHandlers = [];
     rootCtx.wheelInterest = false;
+    rootCtx.clickInterest = false;
     rootCtx.pendingEffects = [];
   | None => ()
   };
