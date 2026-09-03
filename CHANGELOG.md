@@ -3,6 +3,29 @@
 All notable changes to Matcha are recorded here. Versions follow semantic
 versioning, with the 0.x caveat that a minor bump may break the API.
 
+## 0.3.1 — 2026-09-03
+
+### Fixed
+
+- **Installing matcha no longer runs its test suite.** opam builds a package
+  with `dune build -p matcha @install @runtest`, and the suite was not
+  scoped to a package, so it ran inside the installing user's sandbox —
+  opening pseudo-terminals, spawning the example binaries as subprocesses,
+  and draining them against wall-clock deadlines. That is the right way to
+  test a terminal UI and the wrong thing to do during somebody's install.
+
+  0.2.0 and 0.3.0 both failed opam CI for this reason, on an emulated
+  riscv64 runner and two experimental macOS runners, while sixty-seven
+  other jobs passed. The suite now belongs to a `matcha-tests` package that
+  is never published, so `-p matcha` skips it — and skips building the
+  examples too, which makes the install smaller as well as quieter.
+  `dune runtest` in a clone is unchanged.
+
+  `scripts/release.sh` now refuses to tag if a package build executes any
+  test at all, so this cannot come back.
+
+`matcha.opam` is byte-identical to 0.3.0; nothing about the library changed.
+
 ## 0.3.0 — 2026-09-02
 
 Four traps that application authors kept falling into, turned into

@@ -151,6 +151,26 @@ info "exported $(git rev-parse --short HEAD) to a temporary directory"
   die "the exported tree does not build - the tarball would be broken"
 info "'dune build -p matcha @install' succeeds on the export"
 
+step "Checking the package build runs no tests"
+
+# opam-repository CI builds with `@install @runtest`, so anything on the
+# runtest alias that is not scoped to another package runs inside a
+# stranger's install sandbox. matcha's suite opens pseudo-terminals, spawns
+# the example binaries and drains them against wall-clock deadlines - fine
+# on a developer's machine, and the reason 0.2.0 and 0.3.0 both failed opam
+# CI on an emulated riscv64 runner and two experimental macOS ones while
+# sixty-seven other jobs passed.
+#
+# The suite belongs to the matcha-tests package, which is never published.
+# This asserts that is still true, on the tree that is about to ship.
+ran=$( (cd "$export_dir" && dune build -p matcha @install @runtest 2>&1) |
+  grep -cE '\.\.\. (PASS|FAIL)' || true)
+[ "$ran" -eq 0 ] ||
+  die "a 'dune build -p matcha @install @runtest' on the export executed
+$ran tests. They must belong to matcha-tests (or another unpublished
+package) so that installing matcha never runs them - see dune-project."
+info "'-p matcha @install @runtest' executes no tests"
+
 # --------------------------------------------------------------- the release
 
 notes="$(awk -v v="$VERSION" '

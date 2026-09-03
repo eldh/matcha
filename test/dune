@@ -5,6 +5,11 @@
 ; Run tests with: dune test
 (test
  (name run_tests)
+ ; Belongs to matcha-tests, not matcha, so `dune build -p matcha` skips it
+ ; entirely - see the comment in dune-project. Without this the suite runs
+ ; during `opam install matcha`, opening pseudo-terminals and spawning the
+ ; example binaries inside somebody else's build sandbox.
+ (package matcha-tests)
  (modules
   run_tests
   headless_tests

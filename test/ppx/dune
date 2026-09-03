@@ -10,6 +10,9 @@
 
 (rule
  (alias runtest)
+ ; matcha-tests, not matcha - these expansion goldens must not run inside
+ ; somebody's `opam install matcha`. See dune-project.
+ (package matcha-tests)
  (action
   (diff case_zero_arg.expected case_zero_arg.actual)))
 
@@ -21,6 +24,9 @@
 
 (rule
  (alias runtest)
+ ; matcha-tests, not matcha - these expansion goldens must not run inside
+ ; somebody's `opam install matcha`. See dune-project.
+ (package matcha-tests)
  (action
   (diff case_labeled.expected case_labeled.actual)))
 
@@ -32,6 +38,9 @@
 
 (rule
  (alias runtest)
+ ; matcha-tests, not matcha - these expansion goldens must not run inside
+ ; somebody's `opam install matcha`. See dune-project.
+ (package matcha-tests)
  (action
   (diff case_optional.expected case_optional.actual)))
 
@@ -43,5 +52,8 @@
 
 (rule
  (alias runtest)
+ ; matcha-tests, not matcha - these expansion goldens must not run inside
+ ; somebody's `opam install matcha`. See dune-project.
+ (package matcha-tests)
  (action
   (diff case_jsx_children.expected case_jsx_children.actual)))
